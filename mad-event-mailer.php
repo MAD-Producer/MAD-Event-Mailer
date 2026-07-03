@@ -657,6 +657,7 @@ class MAD_Event_Mailer {
         $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'zh'));
         $unsub_lang = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'zh';
         $html = self::ensure_unsubscribe_notice($html, $unsub_lang, $include_unsub);
+        while (ob_get_level()) { ob_end_clean(); }
         header('Content-Type: text/html; charset=UTF-8');
         echo self::safe_email_html($html);
         exit;
