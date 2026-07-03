@@ -144,19 +144,19 @@ class MAD_Event_Mailer {
     private static function table($name) { global $wpdb; return $wpdb->prefix . 'mad_em_' . $name; }
     private static function now() { return current_time('mysql'); }
     private static function settings() { return wp_parse_args(get_option(self::OPT, []), [
-        'host'=>'', 'port'=>'465', 'secure'=>'ssl', 'username'=>'', 'password'=>'', 'from_email'=>'', 'from_name'=>'No-reply', 'sender_name'=>'', 'reply_to'=>'', 'batch_size'=>30, 'register_page_url'=>'', 'default_unsubscribe_button'=>1, 'default_unsubscribe_lang'=>'zh', 'ui_language'=>'zh_CN', 'public_language'=>'zh_CN'
+        'host'=>'', 'port'=>'465', 'secure'=>'ssl', 'username'=>'', 'password'=>'', 'from_email'=>'', 'from_name'=>'No-reply', 'sender_name'=>'', 'reply_to'=>'', 'batch_size'=>30, 'register_page_url'=>'', 'default_unsubscribe_button'=>1, 'default_unsubscribe_lang'=>'zh', 'ui_language'=>'auto', 'public_language'=>'auto'
     ]); }
 
     private static function current_ui_language() {
         $s = self::settings();
-        $lang = $s['ui_language'] ?? 'zh_CN';
+        $lang = $s['ui_language'] ?? 'auto';
         if ($lang === 'auto') $lang = get_locale();
         return $lang;
     }
 
     private static function current_public_language() {
         $s = self::settings();
-        $lang = $s['public_language'] ?? 'zh_CN';
+        $lang = $s['public_language'] ?? 'auto';
         if ($lang === 'auto') $lang = get_locale();
         return $lang;
     }
@@ -498,8 +498,8 @@ class MAD_Event_Mailer {
                 'register_page_url'=>esc_url_raw(wp_unslash($_POST['register_page_url'] ?? '')),
                 'default_unsubscribe_button'=>!empty($_POST['default_unsubscribe_button']) ? 1 : 0,
                 'default_unsubscribe_lang'=>in_array(sanitize_text_field(wp_unslash($_POST['default_unsubscribe_lang'] ?? 'zh')), ['zh','en'], true) ? sanitize_text_field(wp_unslash($_POST['default_unsubscribe_lang'])) : 'zh',
-                'ui_language'=>in_array(sanitize_text_field(wp_unslash($_POST['ui_language'] ?? 'zh_CN')), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['ui_language'])) : 'zh_CN',
-                'public_language'=>in_array(sanitize_text_field(wp_unslash($_POST['public_language'] ?? 'zh_CN')), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['public_language'])) : 'zh_CN'
+                'ui_language'=>in_array(sanitize_text_field(wp_unslash($_POST['ui_language'] ?? 'auto')), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['ui_language'])) : 'auto',
+                'public_language'=>in_array(sanitize_text_field(wp_unslash($_POST['public_language'] ?? 'auto')), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['public_language'])) : 'auto'
             ]);
             add_action('admin_notices', fn()=>self::notice('设置已保存。发件人姓名已更新为：'.$sender_name));
         }
@@ -905,8 +905,8 @@ class MAD_Event_Mailer {
         <tr><th>订阅 / 退订页面固定链接</th><td><input class="regular-text" name="register_page_url" value="<?php echo esc_attr($s['register_page_url']); ?>" placeholder="https://example.com/mail-subscribe/"><p class="description">请新建一个页面，放入短代码 <code>[mad_email_register]</code>，然后把该页面链接填在这里。邮件底部的退订链接会跳转到这个页面。</p></td></tr>
         <tr><th>默认退订按钮</th><td><label><input type="checkbox" name="default_unsubscribe_button" value="1" <?php checked(!empty($s['default_unsubscribe_button'])); ?>> 新建发送任务时默认在邮件底部添加“订阅管理 / 退订”按钮</label><p class="description">这个按钮由插件自动追加，不需要写在 HTML 模板或正文里。</p></td></tr>
         <tr><th>默认退订按钮语言</th><td><select name="default_unsubscribe_lang"><option value="zh" <?php selected($s['default_unsubscribe_lang'] ?? 'zh','zh'); ?>>中文</option><option value="en" <?php selected($s['default_unsubscribe_lang'] ?? 'zh','en'); ?>>English</option></select></td></tr>
-        <tr><th>后台界面语言</th><td><select name="ui_language"><option value="zh_CN" <?php selected($s['ui_language'] ?? 'zh_CN','zh_CN'); ?>>中文</option><option value="en_US" <?php selected($s['ui_language'] ?? 'zh_CN','en_US'); ?>>English</option><option value="auto" <?php selected($s['ui_language'] ?? 'zh_CN','auto'); ?>>跟随 WordPress 站点语言</option></select><p class="description">切换后保存并刷新 MAD 邮件后台页面即可生效。</p></td></tr>
-        <tr><th>前台订阅页语言</th><td><select name="public_language"><option value="zh_CN" <?php selected($s['public_language'] ?? 'zh_CN','zh_CN'); ?>>中文</option><option value="en_US" <?php selected($s['public_language'] ?? 'zh_CN','en_US'); ?>>English</option><option value="auto" <?php selected($s['public_language'] ?? 'zh_CN','auto'); ?>>跟随 WordPress 站点语言</option></select><p class="description">影响短代码 <code>[mad_email_register]</code> 生成的订阅、查询和退订表单。</p></td></tr></table>
+        <tr><th>后台界面语言</th><td><select name="ui_language"><option value="zh_CN" <?php selected($s['ui_language'] ?? 'auto','zh_CN'); ?>>中文</option><option value="en_US" <?php selected($s['ui_language'] ?? 'auto','en_US'); ?>>English</option><option value="auto" <?php selected($s['ui_language'] ?? 'auto','auto'); ?>>跟随 WordPress 站点语言</option></select><p class="description">切换后保存并刷新 MAD 邮件后台页面即可生效。</p></td></tr>
+        <tr><th>前台订阅页语言</th><td><select name="public_language"><option value="zh_CN" <?php selected($s['public_language'] ?? 'auto','zh_CN'); ?>>中文</option><option value="en_US" <?php selected($s['public_language'] ?? 'auto','en_US'); ?>>English</option><option value="auto" <?php selected($s['public_language'] ?? 'auto','auto'); ?>>跟随 WordPress 站点语言</option></select><p class="description">影响短代码 <code>[mad_email_register]</code> 生成的订阅、查询和退订表单。</p></td></tr></table>
         <?php submit_button('保存设置'); ?></form><?php self::wrap_end();
     }
 
