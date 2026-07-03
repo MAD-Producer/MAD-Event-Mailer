@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAD Event Mailer
  * Description: An HTML email delivery plugin for event notifications. Supports SMTP, template variables, CSV recipients, event subscriptions, shortcode registration, batch sending, scheduled sending and language packs.
- * Version: 2.2.1
+ * Version: 2.2.2
  * Author: MAD Producer Studio
  * Author URI: https://github.com/MAD-Producer
  * License: GPL v2
@@ -14,7 +14,7 @@
 if (!defined('ABSPATH')) exit;
 
 class MAD_Event_Mailer {
-    const VERSION = '2.2.1';
+    const VERSION = '2.2.2';
     const OPT = 'mad_em_settings';
     const CRON = 'mad_em_process_campaigns';
 
@@ -198,12 +198,12 @@ class MAD_Event_Mailer {
     private static function seed_defaults() {
         global $wpdb;
         $t = self::table('templates');
-        $exists = (int)$wpdb->get_var("SELECT COUNT(*) FROM $t");
+        $exists = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i', $t ) );
         if ($exists) return;
         foreach ([['默认中文模板', 'default-template-zh.html'], ['默认英文模板', 'default-template-en.html']] as $item) {
             $file = plugin_dir_path(__FILE__) . $item[1];
             if (file_exists($file)) {
-                $html = file_get_contents($file);
+                $html = self::read_local_file($file);
                 $wpdb->insert($t, [
                     'name'=>$item[0], 'subject'=>'{{title1}}', 'summary'=>'内置示例模板', 'html'=>$html,
                     'variables'=>wp_json_encode(self::extract_vars($html . ' {{title1}}')), 'created_at'=>self::now(), 'updated_at'=>self::now()
@@ -215,7 +215,7 @@ class MAD_Event_Mailer {
     private static function upgrade_templates_unsubscribe() {
         global $wpdb;
         $table = self::table('templates');
-        $rows = $wpdb->get_results("SELECT id, subject, html FROM $table");
+        $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT id, subject, html FROM %i', $table ) );
         foreach ($rows as $row) {
             if (stripos((string)$row->html, '{{unsubscribe_url}}') !== false) continue;
             $html = self::ensure_unsubscribe_notice((string)$row->html);
@@ -258,7 +258,7 @@ class MAD_Event_Mailer {
     private static function wrap_start($title) { echo '<div class="wrap"><h1>'.esc_html($title).'</h1>'; }
     private static function wrap_end() { echo '</div>'; }
     private static function nonce($action) { wp_nonce_field($action, 'mad_em_nonce'); echo '<input type="hidden" name="mad_em_action" value="'.esc_attr($action).'">'; }
-    private static function verify($action) { $nonce_action = in_array($action, ['save_campaign_draft','export_current_csv','preview_current_static'], true) ? 'create_campaign' : $action; return current_user_can('manage_options') && isset($_POST['mad_em_nonce']) && wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['mad_em_nonce'])), $nonce_action); }
+    private static function verify($action) { return current_user_can('manage_options'); }
 
     private static function auto_vars() { return ['name','name1','email','unsubscribe_url']; }
     private static function title_vars() { return ['title','title1']; }
@@ -267,20 +267,96 @@ class MAD_Event_Mailer {
     private static function editable_vars($vars) { return array_values(array_diff($vars, self::system_vars())); }
     private static function csv_escape($v) { return str_replace(["\r","\n"], ' ', (string)$v); }
 
+    private static function csv_line($fields) {
+        $out = [];
+        foreach ((array) $fields as $field) {
+            $field = (string) $field;
+            $field = str_replace('"', '""', $field);
+            $out[] = '"' . $field . '"';
+        }
+        return implode(',', $out) . "\r\n";
+    }
+
+    private static function allowed_email_html() {
+        $allowed = wp_kses_allowed_html('post');
+        $extra_attrs = [
+            'style' => true,
+            'class' => true,
+            'id' => true,
+            'width' => true,
+            'height' => true,
+            'align' => true,
+            'valign' => true,
+            'cellpadding' => true,
+            'cellspacing' => true,
+            'border' => true,
+            'role' => true,
+            'aria-label' => true,
+        ];
+        foreach (['div','span','p','table','thead','tbody','tfoot','tr','td','th','h1','h2','h3','h4','h5','h6','ul','ol','li','strong','em','b','i','br','hr','center'] as $tag) {
+            $allowed[$tag] = isset($allowed[$tag]) ? array_merge($allowed[$tag], $extra_attrs) : $extra_attrs;
+        }
+        $allowed['a'] = isset($allowed['a']) ? array_merge($allowed['a'], $extra_attrs, ['href'=>true,'target'=>true,'rel'=>true,'title'=>true]) : array_merge($extra_attrs, ['href'=>true,'target'=>true,'rel'=>true,'title'=>true]);
+        $allowed['img'] = isset($allowed['img']) ? array_merge($allowed['img'], $extra_attrs, ['src'=>true,'alt'=>true,'title'=>true]) : array_merge($extra_attrs, ['src'=>true,'alt'=>true,'title'=>true]);
+        return $allowed;
+    }
+
+    private static function safe_email_html($html) {
+        return wp_kses((string) $html, self::allowed_email_html());
+    }
+
+    private static function read_local_file($path) {
+        $path = (string) $path;
+        if ($path === '' || !file_exists($path) || !is_readable($path)) return '';
+        global $wp_filesystem;
+        if (!function_exists('WP_Filesystem')) require_once ABSPATH . 'wp-admin/includes/file.php';
+        WP_Filesystem();
+        if ($wp_filesystem) {
+            $content = $wp_filesystem->get_contents($path);
+            return false === $content ? '' : (string) $content;
+        }
+        return '';
+    }
+
+    private static function parse_csv_file($path) {
+        $content = self::read_local_file($path);
+        if ($content === '') return [];
+        $content = preg_replace('/^\xEF\xBB\xBF/', '', $content);
+        $lines = preg_split('/\r\n|\r|\n/', $content);
+        $rows = [];
+        foreach ($lines as $line) {
+            if (trim($line) === '') continue;
+            $rows[] = str_getcsv($line);
+        }
+        return $rows;
+    }
+
+    private static function valid_uploaded_file($key, $extensions = ['csv']) {
+        if (empty($_FILES[$key]) || !is_array($_FILES[$key])) return '';
+        $file = wp_unslash($_FILES[$key]);
+        $tmp = isset($file['tmp_name']) ? (string) $file['tmp_name'] : '';
+        $name = isset($file['name']) ? sanitize_file_name((string) $file['name']) : '';
+        $error = isset($file['error']) ? (int) $file['error'] : UPLOAD_ERR_NO_FILE;
+        $size = isset($file['size']) ? (int) $file['size'] : 0;
+        if ($error !== UPLOAD_ERR_OK || $tmp === '' || !is_uploaded_file($tmp)) return '';
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        if (!in_array($ext, $extensions, true)) return '';
+        if ($size > 1024 * 1024) return '';
+        return $tmp;
+    }
+
     public static function maybe_handle_get() {
-        if (!current_user_can('manage_options')) return;
-        if (empty($_GET['mad_em_export_template_csv'])) return;
-        $_GET['template_id'] = absint($_GET['mad_em_export_template_csv']);
-        self::export_template_csv();
+        // Legacy GET export handler intentionally disabled. CSV export now uses admin-post.php with a required nonce.
+        return;
     }
 
     public static function export_template_csv() {
-        if (!current_user_can('manage_options')) wp_die('权限不足。');
+        if (!current_user_can('manage_options')) wp_die(esc_html__('Insufficient permissions.', 'mad-event-mailer'));
         $template_id = absint($_GET['template_id'] ?? $_GET['mad_em_export_template_csv'] ?? 0);
-        if (isset($_GET['_wpnonce']) && !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'mad_em_export_template_csv_'.$template_id)) wp_die('链接已过期，请返回后台重新点击导出。');
+        if (empty($_GET['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'mad_em_export_template_csv_'.$template_id)) wp_die(esc_html__('The link has expired. Please return to the admin page and export again.', 'mad-event-mailer'));
         global $wpdb;
-        $template = $wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('templates')." WHERE id=%d", $template_id));
-        if (!$template) wp_die('模板不存在。');
+        $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
+        if (!$template) wp_die(esc_html__('Template not found.', 'mad-event-mailer'));
         $vars = self::editable_vars(self::extract_vars($template->html . ' ' . $template->subject));
         $headers = array_merge(['email','name','events'], $vars);
         while (ob_get_level()) { ob_end_clean(); }
@@ -289,11 +365,12 @@ class MAD_Event_Mailer {
         header('Content-Disposition: attachment; filename=mad-mailer-recipients-template-'.$template_id.'.csv');
         header('Pragma: no-cache');
         header('Expires: 0');
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- UTF-8 BOM for CSV download.
         echo "\xEF\xBB\xBF";
-        $out = fopen('php://output', 'w');
-        fputcsv($out, $headers);
-        fputcsv($out, array_merge(['example@example.com','张三','活动名称或 slug'], array_fill(0, count($vars), '')));
-        fclose($out);
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
+        echo self::csv_line($headers);
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
+        echo self::csv_line(array_merge(['example@example.com','张三','活动名称或 slug'], array_fill(0, count($vars), '')));
         exit;
     }
 
@@ -311,12 +388,12 @@ class MAD_Event_Mailer {
     }
 
     public static function preview_template_page() {
-        if (!current_user_can('manage_options')) wp_die('权限不足。');
+        if (!current_user_can('manage_options')) wp_die(esc_html__('Insufficient permissions.', 'mad-event-mailer'));
         $template_id = absint($_GET['template_id'] ?? 0);
-        if (!$template_id || !isset($_GET['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'mad_em_preview_template_'.$template_id)) wp_die('链接已过期，请返回后台重新打开预览。');
+        if (!$template_id || !isset($_GET['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'mad_em_preview_template_'.$template_id)) wp_die(esc_html__('The preview link has expired. Please open the preview again.', 'mad-event-mailer'));
         global $wpdb;
-        $template = $wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('templates')." WHERE id=%d", $template_id));
-        if (!$template) wp_die('模板不存在。');
+        $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
+        if (!$template) wp_die(esc_html__('Template not found.', 'mad-event-mailer'));
         $vars = self::extract_vars($template->html . ' ' . $template->subject);
         $sample = [];
         foreach ($vars as $v) {
@@ -329,7 +406,7 @@ class MAD_Event_Mailer {
         $sample['unsubscribe_url'] = self::get_unsubscribe_url();
         header('Content-Type: text/html; charset=UTF-8');
         $set = self::settings();
-        echo self::render_template(self::ensure_unsubscribe_notice($template->html, $set['default_unsubscribe_lang'] ?? 'zh', !empty($set['default_unsubscribe_button'])), $sample);
+        echo self::safe_email_html( self::render_template( self::ensure_unsubscribe_notice( (string) $template->html, sanitize_text_field( $set['default_unsubscribe_lang'] ?? 'zh' ), ! empty( $set['default_unsubscribe_button'] ) ), $sample ) );
         exit;
     }
 
@@ -337,13 +414,14 @@ class MAD_Event_Mailer {
         if (!current_user_can('manage_options')) wp_send_json_error(['message'=>'权限不足。'], 403);
         check_ajax_referer('mad_em_preview_send', 'nonce');
         global $wpdb;
-        $template_id = absint($_POST['template_id'] ?? 0);
-        $template = $wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('templates')." WHERE id=%d", $template_id));
+        $template_id = absint(wp_unslash($_POST['template_id'] ?? 0));
+        $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
         if (!$template) wp_send_json_error(['message'=>'模板不存在。']);
         $subject = sanitize_text_field(wp_unslash($_POST['subject'] ?? ''));
         $vars = [];
-        if (!empty($_POST['var']) && is_array($_POST['var'])) {
-            foreach ($_POST['var'] as $k=>$v) { $key=sanitize_key($k); if ($key !== '') $vars[$key] = self::sanitize_var_value($key, $v); }
+        $posted_var = isset($_POST['var']) && is_array($_POST['var']) ? wp_unslash($_POST['var']) : [];
+        if (!empty($posted_var)) {
+            foreach ($posted_var as $k=>$v) { $key=sanitize_key($k); if ($key !== '') $vars[$key] = self::sanitize_var_value($key, $v); }
         }
         $vars['name'] = '张三';
         $vars['name1'] = '张三';
@@ -352,12 +430,13 @@ class MAD_Event_Mailer {
         $vars['title1'] = $subject ?: '示例邮件标题';
         $vars['unsubscribe_url'] = self::get_unsubscribe_url();
         $include_unsub = !empty($_POST['include_unsubscribe']);
-        $unsub_lang = in_array(($_POST['unsubscribe_lang'] ?? 'zh'), ['zh','en'], true) ? sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'])) : 'zh';
+        $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'zh'));
+        $unsub_lang = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'zh';
         foreach (self::editable_vars(self::extract_vars($template->html . ' ' . implode(' ', array_map('strval', $vars)))) as $v) {
             if (!isset($vars[$v]) || $vars[$v] === '') $vars[$v] = '示例 '.$v;
         }
         $html = self::render_template(self::ensure_unsubscribe_notice($template->html, $unsub_lang, $include_unsub), $vars);
-        wp_send_json_success(['html'=>$html]);
+        wp_send_json_success(['html'=>self::safe_email_html($html)]);
     }
 
 
@@ -367,16 +446,18 @@ class MAD_Event_Mailer {
         global $wpdb;
         $to = sanitize_email(wp_unslash($_POST['test_email'] ?? ''));
         if (!is_email($to)) wp_send_json_error(['message'=>'请填写有效的测试邮箱。']);
-        $template_id = absint($_POST['template_id'] ?? 0);
-        $template = $wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('templates')." WHERE id=%d", $template_id));
+        $template_id = absint(wp_unslash($_POST['template_id'] ?? 0));
+        $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
         if (!$template) wp_send_json_error(['message'=>'模板不存在。']);
         $subject = sanitize_text_field(wp_unslash($_POST['subject'] ?? '测试邮件'));
         $vars = [];
-        if (!empty($_POST['var']) && is_array($_POST['var'])) {
-            foreach ($_POST['var'] as $k=>$v) { $key=sanitize_key($k); if ($key !== '') $vars[$key] = self::sanitize_var_value($key, $v); }
+        $posted_var = isset($_POST['var']) && is_array($_POST['var']) ? wp_unslash($_POST['var']) : [];
+        if (!empty($posted_var)) {
+            foreach ($posted_var as $k=>$v) { $key=sanitize_key($k); if ($key !== '') $vars[$key] = self::sanitize_var_value($key, $v); }
         }
-        if (!empty($_POST['test_var']) && is_array($_POST['test_var'])) {
-            foreach ($_POST['test_var'] as $k=>$v) { $key=sanitize_key($k); if ($key !== '') $vars[$key] = self::sanitize_var_value($key, $v); }
+        $posted_test_var = isset($_POST['test_var']) && is_array($_POST['test_var']) ? wp_unslash($_POST['test_var']) : [];
+        if (!empty($posted_test_var)) {
+            foreach ($posted_test_var as $k=>$v) { $key=sanitize_key($k); if ($key !== '') $vars[$key] = self::sanitize_var_value($key, $v); }
         }
         $vars['email'] = $to;
         $vars['name'] = $vars['name'] ?? '测试收件人';
@@ -385,7 +466,8 @@ class MAD_Event_Mailer {
         $vars['title1'] = $subject ?: '测试邮件';
         $vars['unsubscribe_url'] = self::get_unsubscribe_url();
         $include_unsub = !empty($_POST['include_unsubscribe']);
-        $unsub_lang = in_array(($_POST['unsubscribe_lang'] ?? 'zh'), ['zh','en'], true) ? sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'])) : 'zh';
+        $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'zh'));
+        $unsub_lang = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'zh';
         foreach (self::editable_vars(self::extract_vars($template->html . ' ' . $template->subject . ' ' . implode(' ', array_map('strval',$vars)))) as $v) {
             if (!isset($vars[$v]) || $vars[$v] === '') $vars[$v] = '测试 '.$v;
         }
@@ -400,7 +482,9 @@ class MAD_Event_Mailer {
         if (function_exists('wp_doing_ajax') && wp_doing_ajax()) return;
         if (empty($_POST['mad_em_action'])) return;
         $action = sanitize_text_field(wp_unslash($_POST['mad_em_action']));
-        if (!self::verify($action)) return;
+        $nonce_action = in_array($action, ['save_campaign_draft','export_current_csv','preview_current_static'], true) ? 'create_campaign' : $action;
+        if (!current_user_can('manage_options')) return;
+        check_admin_referer($nonce_action, 'mad_em_nonce');
         global $wpdb;
 
         if ($action === 'save_settings') {
@@ -410,25 +494,26 @@ class MAD_Event_Mailer {
                 'secure'=>sanitize_text_field(wp_unslash($_POST['secure'] ?? 'ssl')), 'username'=>sanitize_text_field(wp_unslash($_POST['username'] ?? '')),
                 'password'=>sanitize_text_field(wp_unslash($_POST['password'] ?? '')), 'from_email'=>sanitize_email(wp_unslash($_POST['from_email'] ?? '')),
                 'from_name'=>$sender_name, 'sender_name'=>$sender_name, 'reply_to'=>sanitize_email(wp_unslash($_POST['reply_to'] ?? '')),
-                'batch_size'=>max(1, (int)($_POST['batch_size'] ?? 30)),
+                'batch_size'=>max(1, (int) sanitize_text_field(wp_unslash($_POST['batch_size'] ?? 30))),
                 'register_page_url'=>esc_url_raw(wp_unslash($_POST['register_page_url'] ?? '')),
                 'default_unsubscribe_button'=>!empty($_POST['default_unsubscribe_button']) ? 1 : 0,
-                'default_unsubscribe_lang'=>in_array(($_POST['default_unsubscribe_lang'] ?? 'zh'), ['zh','en'], true) ? sanitize_text_field(wp_unslash($_POST['default_unsubscribe_lang'])) : 'zh',
-                'ui_language'=>in_array(($_POST['ui_language'] ?? 'zh_CN'), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['ui_language'])) : 'zh_CN',
-                'public_language'=>in_array(($_POST['public_language'] ?? 'zh_CN'), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['public_language'])) : 'zh_CN'
+                'default_unsubscribe_lang'=>in_array(sanitize_text_field(wp_unslash($_POST['default_unsubscribe_lang'] ?? 'zh')), ['zh','en'], true) ? sanitize_text_field(wp_unslash($_POST['default_unsubscribe_lang'])) : 'zh',
+                'ui_language'=>in_array(sanitize_text_field(wp_unslash($_POST['ui_language'] ?? 'zh_CN')), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['ui_language'])) : 'zh_CN',
+                'public_language'=>in_array(sanitize_text_field(wp_unslash($_POST['public_language'] ?? 'zh_CN')), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['public_language'])) : 'zh_CN'
             ]);
             add_action('admin_notices', fn()=>self::notice('设置已保存。发件人姓名已更新为：'.$sender_name));
         }
 
 
         if ($action === 'save_template') {
-            $id = absint($_POST['id'] ?? 0);
-            $html = wp_unslash($_POST['html'] ?? '');
-            if (!empty($_FILES['html_file']['tmp_name'])) $html = file_get_contents($_FILES['html_file']['tmp_name']);
+            $id = absint(wp_unslash($_POST['id'] ?? 0));
+            $html = self::safe_email_html(wp_unslash($_POST['html'] ?? ''));
+            $html_file = self::valid_uploaded_file('html_file', ['html','htm']);
+            if ($html_file) $html = self::safe_email_html(self::read_local_file($html_file));
             $data = [
                 'name'=>sanitize_text_field(wp_unslash($_POST['name'] ?? '')), 'subject'=>sanitize_text_field(wp_unslash($_POST['subject'] ?? '')),
                 'summary'=>sanitize_textarea_field(wp_unslash($_POST['summary'] ?? '')), 'html'=>$html,
-                'variables'=>wp_json_encode(self::extract_vars($html . ' ' . ($_POST['subject'] ?? ''))), 'updated_at'=>self::now()
+                'variables'=>wp_json_encode(self::extract_vars($html . ' ' . sanitize_text_field(wp_unslash($_POST['subject'] ?? '')))), 'updated_at'=>self::now()
             ];
             if ($id) $wpdb->update(self::table('templates'), $data, ['id'=>$id]);
             else { $data['created_at'] = self::now(); $wpdb->insert(self::table('templates'), $data); }
@@ -436,8 +521,8 @@ class MAD_Event_Mailer {
         }
 
         if ($action === 'save_quick_template') {
-            $base_id = absint($_POST['base_template_id'] ?? 0);
-            $base = $wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('templates')." WHERE id=%d", $base_id));
+            $base_id = absint(wp_unslash($_POST['base_template_id'] ?? 0));
+            $base = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $base_id ) );
             if ($base) {
                 $body = wp_kses_post(wp_unslash($_POST['quick_body'] ?? ''));
                 $html = (string)$base->html;
@@ -459,7 +544,7 @@ class MAD_Event_Mailer {
         }
 
         if ($action === 'delete_template') {
-            $id = absint($_POST['id']);
+            $id = absint(wp_unslash($_POST['id']));
             if (self::is_builtin_template($id)) {
                 add_action('admin_notices', fn()=>self::notice('通用内置模板不能删除。', 'warning'));
             } else {
@@ -469,34 +554,34 @@ class MAD_Event_Mailer {
         }
 
         if ($action === 'save_event') {
-            $id = absint($_POST['id'] ?? 0);
+            $id = absint(wp_unslash($_POST['id'] ?? 0));
             $name = sanitize_text_field(wp_unslash($_POST['name'] ?? ''));
-            $slug = sanitize_title($_POST['slug'] ?? $name);
-            $data = ['name'=>$name, 'slug'=>$slug, 'description'=>sanitize_textarea_field(wp_unslash($_POST['description'] ?? '')), 'active'=>isset($_POST['active']) ? 1 : 0];
+            $slug = sanitize_title(wp_unslash($_POST['slug'] ?? $name));
+            $data = ['name'=>$name, 'slug'=>$slug, 'description'=>sanitize_textarea_field(wp_unslash($_POST['description'] ?? '')), 'active'=>!empty($_POST['active']) ? 1 : 0];
             if ($id) $wpdb->update(self::table('events'), $data, ['id'=>$id]);
             else { $data['created_at']=self::now(); $wpdb->insert(self::table('events'), $data); }
             add_action('admin_notices', fn()=>self::notice('活动已保存。'));
         }
 
         if ($action === 'delete_event') {
-            $id = absint($_POST['id']);
+            $id = absint(wp_unslash($_POST['id']));
             $wpdb->delete(self::table('subscriber_events'), ['event_id'=>$id]);
             $wpdb->delete(self::table('events'), ['id'=>$id]);
             add_action('admin_notices', fn()=>self::notice('活动已删除。'));
         }
 
         if ($action === 'save_subscriber') {
-            self::upsert_subscriber(sanitize_email(wp_unslash($_POST['email'] ?? '')), sanitize_text_field(wp_unslash($_POST['name'] ?? '')), array_map('absint', $_POST['events'] ?? []), 'manual');
+            self::upsert_subscriber(sanitize_email(wp_unslash($_POST['email'] ?? '')), sanitize_text_field(wp_unslash($_POST['name'] ?? '')), array_map('absint', wp_unslash($_POST['events'] ?? [])), 'manual');
             add_action('admin_notices', fn()=>self::notice('收件人已保存。'));
         }
 
         if ($action === 'import_csv') {
-            $count = self::import_csv($_FILES['csv_file']['tmp_name'] ?? '');
+            $count = self::import_csv(self::valid_uploaded_file('csv_file', ['csv']));
             add_action('admin_notices', fn()=>self::notice("CSV 导入完成：$count 个收件人。"));
         }
 
         if ($action === 'delete_subscriber') {
-            $id = absint($_POST['id']);
+            $id = absint(wp_unslash($_POST['id']));
             $wpdb->delete(self::table('subscriber_events'), ['subscriber_id'=>$id]);
             $wpdb->delete(self::table('subscribers'), ['id'=>$id]);
             add_action('admin_notices', fn()=>self::notice('收件人已删除。'));
@@ -513,15 +598,16 @@ class MAD_Event_Mailer {
         if ($action === 'create_campaign' || $action === 'save_campaign_draft') {
             $is_draft = $action === 'save_campaign_draft';
             $campaign_id = self::create_campaign_from_post($is_draft);
-            if ($campaign_id && !$is_draft && ($_POST['send_mode'] ?? '') === 'now') self::process_campaigns($campaign_id);
+            if ($campaign_id && !$is_draft && sanitize_text_field(wp_unslash($_POST['send_mode'] ?? '')) === 'now') self::process_campaigns($campaign_id);
             add_action('admin_notices', fn()=>self::notice($is_draft ? '发送任务草稿已保存。' : '发送任务已创建。系统会通过 WP-Cron 分批处理。'));
         }
     }
 
     private static function posted_vars_for_preview() {
         $vars = [];
-        if (!empty($_POST['var']) && is_array($_POST['var'])) {
-            foreach ($_POST['var'] as $k=>$v) {
+        $posted_var = isset($_POST['var']) && is_array($_POST['var']) ? wp_unslash($_POST['var']) : [];
+        if (!empty($posted_var)) {
+            foreach ($posted_var as $k=>$v) {
                 $key = sanitize_key($k);
                 if ($key === '') continue;
                 $vars[$key] = self::sanitize_var_value($key, $v);
@@ -532,15 +618,15 @@ class MAD_Event_Mailer {
 
     private static function current_template_from_post() {
         global $wpdb;
-        $template_id = absint($_POST['template_id'] ?? 0);
+        $template_id = absint(wp_unslash($_POST['template_id'] ?? 0));
         if (!$template_id) return null;
-        return $wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('templates')." WHERE id=%d", $template_id));
+        return $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
     }
 
     private static function export_current_form_csv() {
-        if (!current_user_can('manage_options')) wp_die('权限不足。');
+        if (!current_user_can('manage_options')) wp_die(esc_html__('Insufficient permissions.', 'mad-event-mailer'));
         $template = self::current_template_from_post();
-        if (!$template) wp_die('请先选择模板。');
+        if (!$template) wp_die(esc_html__('Please select a template first.', 'mad-event-mailer'));
         $posted_vars = self::posted_vars_for_preview();
         $scan = $template->html . ' ' . $template->subject . ' ' . implode(' ', array_map('strval', $posted_vars));
         $vars = array_values(array_diff(self::editable_vars(self::extract_vars($scan)), self::body_vars()));
@@ -551,25 +637,27 @@ class MAD_Event_Mailer {
         header('Content-Disposition: attachment; filename=mad-mailer-recipients-current-template.csv');
         header('Pragma: no-cache');
         header('Expires: 0');
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- UTF-8 BOM for CSV download.
         echo "\xEF\xBB\xBF";
-        $out = fopen('php://output', 'w');
-        fputcsv($out, $headers);
-        fputcsv($out, array_merge(['example@example.com','张三','活动名称或 slug'], array_fill(0, count($vars), '')));
-        fclose($out);
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
+        echo self::csv_line($headers);
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
+        echo self::csv_line(array_merge(['example@example.com','张三','活动名称或 slug'], array_fill(0, count($vars), '')));
         exit;
     }
 
     private static function preview_current_form_static() {
-        if (!current_user_can('manage_options')) wp_die('权限不足。');
+        if (!current_user_can('manage_options')) wp_die(esc_html__('Insufficient permissions.', 'mad-event-mailer'));
         $template = self::current_template_from_post();
-        if (!$template) wp_die('请先选择模板。');
+        if (!$template) wp_die(esc_html__('Please select a template first.', 'mad-event-mailer'));
         $html = (string)$template->html;
         // 发送前预览只做结构预览：所有变量都保留为 {{变量名}}，不读取收件人或变量实际值，也不会发送邮件。
         $include_unsub = !empty($_POST['include_unsubscribe']);
-        $unsub_lang = in_array(($_POST['unsubscribe_lang'] ?? 'zh'), ['zh','en'], true) ? sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'])) : 'zh';
+        $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'zh'));
+        $unsub_lang = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'zh';
         $html = self::ensure_unsubscribe_notice($html, $unsub_lang, $include_unsub);
         header('Content-Type: text/html; charset=UTF-8');
-        echo $html;
+        echo self::safe_email_html($html);
         exit;
     }
 
@@ -602,7 +690,7 @@ class MAD_Event_Mailer {
         $id = (int)$id;
         if ($id <= 0) return false;
         global $wpdb;
-        $name = (string)$wpdb->get_var($wpdb->prepare("SELECT name FROM ".self::table('templates')." WHERE id=%d", $id));
+        $name = (string) $wpdb->get_var( $wpdb->prepare( 'SELECT name FROM %i WHERE id=%d', self::table('templates'), $id ) );
         return in_array($id, [1,2], true) || in_array($name, ['默认中文模板','默认英文模板','Default English Template'], true);
     }
 
@@ -630,15 +718,22 @@ class MAD_Event_Mailer {
     }
 
     private static function get_events($active_only=false) {
-        global $wpdb; $where = $active_only ? 'WHERE active=1' : ''; return $wpdb->get_results("SELECT * FROM ".self::table('events')." $where ORDER BY id DESC");
+        global $wpdb;
+        if ($active_only) {
+            return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE active=%d ORDER BY id DESC', self::table('events'), 1 ) );
+        }
+        return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC', self::table('events') ) );
     }
-    private static function get_templates() { global $wpdb; return $wpdb->get_results("SELECT * FROM ".self::table('templates')." ORDER BY id DESC"); }
+    private static function get_templates() {
+        global $wpdb;
+        return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC', self::table('templates') ) );
+    }
 
     private static function upsert_subscriber($email, $name, $event_ids, $source='manual', $merge_events=false) {
         global $wpdb;
         if (!is_email($email)) return 0;
         $table = self::table('subscribers');
-        $id = (int)$wpdb->get_var($wpdb->prepare("SELECT id FROM $table WHERE email=%s", $email));
+        $id = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM %i WHERE email=%s', $table, $email ) );
         $data = ['email'=>$email, 'name'=>$name, 'status'=>'subscribed', 'source'=>$source, 'updated_at'=>self::now()];
         if ($id) $wpdb->update($table, $data, ['id'=>$id]); else { $data['created_at']=self::now(); $wpdb->insert($table, $data); $id = (int)$wpdb->insert_id; }
         if (!$merge_events) $wpdb->delete(self::table('subscriber_events'), ['subscriber_id'=>$id]);
@@ -647,14 +742,16 @@ class MAD_Event_Mailer {
     }
 
     private static function import_csv($path) {
-        if (!$path || !file_exists($path)) return 0;
-        $handle = fopen($path, 'r'); if (!$handle) return 0;
-        $header = fgetcsv($handle); if (!$header) return 0;
-        $header = array_map(fn($h)=>strtolower(trim($h)), $header);
+        $rows = self::parse_csv_file($path);
+        if (empty($rows)) return 0;
+        $header = array_shift($rows);
+        if (!$header) return 0;
+        $header = array_map(fn($h)=>strtolower(trim((string) $h)), $header);
         $count = 0; $events = self::get_events(false); $event_map = [];
         foreach ($events as $e) { $event_map[strtolower($e->slug)] = $e->id; $event_map[strtolower($e->name)] = $e->id; }
-        while (($row = fgetcsv($handle)) !== false) {
+        foreach ($rows as $row) {
             $data = array_combine($header, array_pad($row, count($header), ''));
+            if (!is_array($data)) continue;
             $email = sanitize_email($data['email'] ?? $data['邮箱'] ?? '');
             $name = sanitize_text_field($data['name'] ?? $data['姓名'] ?? '');
             $event_ids = [];
@@ -662,22 +759,23 @@ class MAD_Event_Mailer {
             foreach (preg_split('/[,;|，、]+/', $event_text) as $token) {
                 $key = strtolower(trim($token)); if (isset($event_map[$key])) $event_ids[] = $event_map[$key];
             }
-            if (empty($event_ids) && !empty($_POST['default_event'])) $event_ids[] = absint($_POST['default_event']);
+            if (empty($event_ids) && !empty($_POST['default_event'])) $event_ids[] = absint(wp_unslash($_POST['default_event']));
             if (self::upsert_subscriber($email, $name, $event_ids, 'csv')) $count++;
         }
-        fclose($handle); return $count;
+        return $count;
     }
 
     private static function create_campaign_from_post($as_draft=false) {
         global $wpdb;
-        $template_id = absint($_POST['template_id'] ?? 0);
-        $template = $wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('templates')." WHERE id=%d", $template_id));
+        $template_id = absint(wp_unslash($_POST['template_id'] ?? 0));
+        $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
         if (!$template) return 0;
-        $event_id = absint($_POST['event_id'] ?? 0);
+        $event_id = absint(wp_unslash($_POST['event_id'] ?? 0));
         $subject = sanitize_text_field(wp_unslash($_POST['subject'] ?? $template->subject));
         $vars = [];
-        if (!empty($_POST['var']) && is_array($_POST['var'])) {
-            foreach ($_POST['var'] as $k=>$v) {
+        $posted_var = isset($_POST['var']) && is_array($_POST['var']) ? wp_unslash($_POST['var']) : [];
+        if (!empty($posted_var)) {
+            foreach ($posted_var as $k=>$v) {
                 $key = sanitize_key($k);
                 if ($key === '') continue;
                 $vars[$key] = self::sanitize_var_value($key, $v);
@@ -685,7 +783,8 @@ class MAD_Event_Mailer {
         }
         foreach (self::title_vars() as $tv) $vars[$tv] = $subject;
         $vars['__include_unsubscribe'] = !empty($_POST['include_unsubscribe']) ? 1 : 0;
-        $vars['__unsubscribe_lang'] = in_array(($_POST['unsubscribe_lang'] ?? 'zh'), ['zh','en'], true) ? sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'])) : 'zh';
+        $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'zh'));
+        $vars['__unsubscribe_lang'] = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'zh';
         // 变量可能写在“正文内容”里，例如正文中包含 {{score}}，这里要一起扫描，方便 CSV 逐人填充。
         $scan_text = $template->html . ' ' . $template->subject . ' ' . implode(' ', array_map('strval', $vars));
         $all_vars = self::extract_vars($scan_text);
@@ -693,7 +792,7 @@ class MAD_Event_Mailer {
             if (!array_key_exists($v, $vars)) $vars[$v] = '';
         }
         $scheduled = sanitize_text_field(wp_unslash($_POST['scheduled_at'] ?? ''));
-        $status = $as_draft ? 'draft' : ((($_POST['send_mode'] ?? '') === 'schedule' && $scheduled) ? 'scheduled' : 'queued');
+        $status = $as_draft ? 'draft' : ((sanitize_text_field(wp_unslash($_POST['send_mode'] ?? '')) === 'schedule' && $scheduled) ? 'scheduled' : 'queued');
         $recipient_mode = sanitize_text_field(wp_unslash($_POST['recipient_mode'] ?? 'event'));
         $wpdb->insert(self::table('campaigns'), [
             'name'=>$subject, 'subject'=>$subject, 'template_id'=>$template_id, 'event_id'=>$recipient_mode === 'csv' ? null : ($event_id ?: null),
@@ -701,8 +800,9 @@ class MAD_Event_Mailer {
         ]);
         $cid = (int)$wpdb->insert_id;
         if (!$as_draft) {
-            if ($recipient_mode === 'csv' && !empty($_FILES['recipient_csv']['tmp_name'])) {
-                self::prepare_logs_from_template_csv($cid, $_FILES['recipient_csv']['tmp_name'], $all_vars);
+            if ($recipient_mode === 'csv') {
+                $recipient_csv = self::valid_uploaded_file('recipient_csv', ['csv']);
+                if ($recipient_csv) self::prepare_logs_from_template_csv($cid, $recipient_csv, $all_vars);
             } else {
                 self::prepare_logs($cid, $event_id);
             }
@@ -713,24 +813,26 @@ class MAD_Event_Mailer {
     private static function prepare_logs($campaign_id, $event_id=0) {
         global $wpdb;
         $subs = self::table('subscribers'); $se = self::table('subscriber_events'); $logs = self::table('campaign_logs');
-        if ($event_id) $rows = $wpdb->get_results($wpdb->prepare("SELECT DISTINCT s.* FROM $subs s INNER JOIN $se se ON s.id=se.subscriber_id WHERE s.status='subscribed' AND se.event_id=%d", $event_id));
-        else $rows = $wpdb->get_results("SELECT * FROM $subs WHERE status='subscribed'");
+        if ($event_id) $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT DISTINCT s.* FROM %i s INNER JOIN %i se ON s.id=se.subscriber_id WHERE s.status=%s AND se.event_id=%d', $subs, $se, 'subscribed', $event_id ) );
+        else $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE status=%s', $subs, 'subscribed' ) );
         foreach ($rows as $s) $wpdb->insert($logs, ['campaign_id'=>$campaign_id, 'subscriber_id'=>$s->id, 'email'=>$s->email, 'status'=>'pending']);
         $wpdb->update(self::table('campaigns'), ['total'=>count($rows)], ['id'=>$campaign_id]);
     }
 
     private static function prepare_logs_from_template_csv($campaign_id, $path, $template_vars) {
         global $wpdb;
-        if (!$path || !file_exists($path)) return 0;
-        $handle = fopen($path, 'r'); if (!$handle) return 0;
-        $header = fgetcsv($handle); if (!$header) return 0;
+        $rows = self::parse_csv_file($path);
+        if (empty($rows)) return 0;
+        $header = array_shift($rows);
+        if (!$header) return 0;
         if (isset($header[0])) $header[0] = preg_replace('/^\xEF\xBB\xBF/', '', $header[0]);
-        $header = array_map(fn($h)=>strtolower(trim($h)), $header);
+        $header = array_map(fn($h)=>strtolower(trim((string) $h)), $header);
         $events = self::get_events(false); $event_map = [];
         foreach ($events as $e) { $event_map[strtolower($e->slug)] = $e->id; $event_map[strtolower($e->name)] = $e->id; }
         $count = 0; $editable = self::editable_vars($template_vars);
-        while (($row = fgetcsv($handle)) !== false) {
+        foreach ($rows as $row) {
             $data = array_combine($header, array_pad($row, count($header), ''));
+            if (!is_array($data)) continue;
             $email = sanitize_email($data['email'] ?? $data['邮箱'] ?? '');
             $name = sanitize_text_field($data['name'] ?? $data['姓名'] ?? '');
             if (!is_email($email)) continue;
@@ -739,18 +841,14 @@ class MAD_Event_Mailer {
             foreach (preg_split('/[,;|，、]+/', $event_text) as $token) {
                 $key = strtolower(trim($token)); if (isset($event_map[$key])) $event_ids[] = $event_map[$key];
             }
-            $sid = self::upsert_subscriber($email, $name, $event_ids, 'campaign_csv');
+            $sid = self::upsert_subscriber($email, $name, $event_ids, 'csv-campaign', true);
             if (!$sid) continue;
             $wpdb->insert(self::table('campaign_logs'), ['campaign_id'=>$campaign_id, 'subscriber_id'=>$sid, 'email'=>$email, 'status'=>'pending']);
             $per_vars = [];
-            foreach ($editable as $v) {
-                $key = strtolower($v);
-                if (array_key_exists($key, $data)) $per_vars[$v] = sanitize_textarea_field($data[$key]);
-            }
+            foreach ($editable as $v) if (isset($data[strtolower($v)])) $per_vars[$v] = sanitize_textarea_field($data[strtolower($v)]);
             if ($per_vars) $wpdb->replace(self::table('campaign_recipient_vars'), ['campaign_id'=>$campaign_id, 'subscriber_id'=>$sid, 'variables'=>wp_json_encode($per_vars)]);
             $count++;
         }
-        fclose($handle);
         $wpdb->update(self::table('campaigns'), ['total'=>$count], ['id'=>$campaign_id]);
         return $count;
     }
@@ -760,17 +858,17 @@ class MAD_Event_Mailer {
         $s = self::settings(); $limit = max(1, (int)$s['batch_size']);
         $campaign_table = self::table('campaigns'); $log_table = self::table('campaign_logs');
         $now = self::now();
-        if ($specific_id) $campaigns = $wpdb->get_results($wpdb->prepare("SELECT * FROM $campaign_table WHERE id=%d", $specific_id));
-        else $campaigns = $wpdb->get_results($wpdb->prepare("SELECT * FROM $campaign_table WHERE status IN ('queued','sending') OR (status='scheduled' AND scheduled_at <= %s) ORDER BY id ASC LIMIT 3", $now));
+        if ($specific_id) $campaigns = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', $campaign_table, $specific_id ) );
+        else $campaigns = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE status IN (%s,%s) OR (status=%s AND scheduled_at <= %s) ORDER BY id ASC LIMIT 3', $campaign_table, 'queued', 'sending', 'scheduled', $now ) );
         foreach ($campaigns as $c) {
             $wpdb->update($campaign_table, ['status'=>'sending'], ['id'=>$c->id]);
-            $template = $wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('templates')." WHERE id=%d", $c->template_id));
+            $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $c->template_id ) );
             if (!$template) continue;
-            $logs = $wpdb->get_results($wpdb->prepare("SELECT * FROM $log_table WHERE campaign_id=%d AND status='pending' LIMIT %d", $c->id, $limit));
+            $logs = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE campaign_id=%d AND status=%s LIMIT %d', $log_table, $c->id, 'pending', $limit ) );
             foreach ($logs as $log) {
-                $sub = $wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('subscribers')." WHERE id=%d", $log->subscriber_id));
+                $sub = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('subscribers'), $log->subscriber_id ) );
                 $vars = json_decode($c->variables, true) ?: [];
-                $per = $wpdb->get_var($wpdb->prepare("SELECT variables FROM ".self::table('campaign_recipient_vars')." WHERE campaign_id=%d AND subscriber_id=%d", $c->id, $log->subscriber_id));
+                $per = $wpdb->get_var( $wpdb->prepare( 'SELECT variables FROM %i WHERE campaign_id=%d AND subscriber_id=%d', self::table('campaign_recipient_vars'), $c->id, $log->subscriber_id ) );
                 if ($per) $vars = array_merge($vars, json_decode($per, true) ?: []);
                 $vars['email'] = $sub->email ?? $log->email;
                 $vars['name'] = $sub->name ?? '';
@@ -784,10 +882,10 @@ class MAD_Event_Mailer {
                 $body = self::render_template(self::ensure_unsubscribe_notice($template->html, $unsub_lang, $include_unsub), $vars);
                 $ok = wp_mail($log->email, $subject, $body, ['Content-Type: text/html; charset=UTF-8']);
                 $wpdb->update($log_table, ['status'=>$ok?'sent':'failed', 'error'=>$ok?'':'wp_mail failed', 'sent_at'=>self::now()], ['id'=>$log->id]);
-                if ($ok) $wpdb->query($wpdb->prepare("UPDATE $campaign_table SET sent=sent+1 WHERE id=%d", $c->id));
-                else $wpdb->query($wpdb->prepare("UPDATE $campaign_table SET failed=failed+1 WHERE id=%d", $c->id));
+                $ok ? $wpdb->query( $wpdb->prepare( 'UPDATE %i SET sent=sent+1 WHERE id=%d', $campaign_table, $c->id ) ) : null;
+                if (!$ok) $wpdb->query( $wpdb->prepare( 'UPDATE %i SET failed=failed+1 WHERE id=%d', $campaign_table, $c->id ) );
             }
-            $pending = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $log_table WHERE campaign_id=%d AND status='pending'", $c->id));
+            $pending = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE campaign_id=%d AND status=%s', $log_table, $c->id, 'pending' ) );
             if (!$pending) $wpdb->update($campaign_table, ['status'=>'finished', 'sent_at'=>self::now()], ['id'=>$c->id]);
         }
     }
@@ -815,7 +913,7 @@ class MAD_Event_Mailer {
     public static function page_templates() {
         global $wpdb;
         $edit = null;
-        if (!empty($_GET['edit'])) $edit = $wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('templates')." WHERE id=%d", absint($_GET['edit'])));
+        if (!empty($_GET['edit'])) $edit = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), absint(wp_unslash($_GET['edit'])) ) );
         self::wrap_start('邮件模板');
         $show_query = !empty($query_result);
         ?>
@@ -854,7 +952,7 @@ class MAD_Event_Mailer {
     }
 
     public static function page_events() {
-        global $wpdb; $edit=null; if (!empty($_GET['edit'])) $edit=$wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('events')." WHERE id=%d", absint($_GET['edit'])));
+        global $wpdb; $edit=null; if (!empty($_GET['edit'])) $edit=$wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('events'), absint(wp_unslash($_GET['edit'])) ) );
         self::wrap_start('活动管理'); ?>
         <form method="post"><?php self::nonce('save_event'); ?><input type="hidden" name="id" value="<?php echo esc_attr($edit->id ?? 0); ?>">
         <table class="form-table"><tr><th>活动名称</th><td><input class="regular-text" name="name" required value="<?php echo esc_attr($edit->name ?? ''); ?>"></td></tr>
@@ -872,8 +970,8 @@ class MAD_Event_Mailer {
         <form method="post" enctype="multipart/form-data"><?php self::nonce('import_csv'); ?><input type="file" name="csv_file" accept=".csv" required> 默认活动： <select name="default_event"><option value="0">不指定</option><?php foreach($events as $e) echo '<option value="'.(int)$e->id.'">'.esc_html($e->name).'</option>'; ?></select> <?php submit_button('导入 CSV', 'secondary', 'submit', false); ?></form>
         <h2>添加收件人</h2><form method="post"><?php self::nonce('save_subscriber'); ?><input name="email" placeholder="email@example.com" required> <input name="name" placeholder="姓名"> <?php foreach($events as $e): ?><label style="margin-right:12px"><input type="checkbox" name="events[]" value="<?php echo (int)$e->id; ?>"> <?php echo esc_html($e->name); ?></label><?php endforeach; ?> <?php submit_button('保存', 'secondary', 'submit', false); ?></form>
         <h2>最近收件人</h2><table class="widefat striped"><thead><tr><th>邮箱</th><th>姓名</th><th>订阅活动</th><th>状态</th><th>操作</th></tr></thead><tbody><?php
-        $rows=$wpdb->get_results("SELECT * FROM ".self::table('subscribers')." ORDER BY id DESC LIMIT 200"); foreach($rows as $r):
-        $names=$wpdb->get_col($wpdb->prepare("SELECT e.name FROM ".self::table('subscriber_events')." se JOIN ".self::table('events')." e ON e.id=se.event_id WHERE se.subscriber_id=%d", $r->id)); ?>
+        $rows=$wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC LIMIT 200', self::table('subscribers') ) ); foreach($rows as $r):
+        $names=$wpdb->get_col( $wpdb->prepare( 'SELECT e.name FROM %i se JOIN %i e ON e.id=se.event_id WHERE se.subscriber_id=%d', self::table('subscriber_events'), self::table('events'), $r->id ) ); ?>
         <tr><td><?php echo esc_html($r->email); ?></td><td><?php echo esc_html($r->name); ?></td><td><?php echo esc_html(implode(', ', $names)); ?></td><td><?php echo esc_html(self::status_label($r->status)); ?></td><td><form method="post"><?php self::nonce('delete_subscriber'); ?><input type="hidden" name="id" value="<?php echo (int)$r->id; ?>"><button class="button-link-delete" onclick="return confirm('确定删除这个收件人吗？')">删除</button></form></td></tr>
         <?php endforeach; ?></tbody></table><?php self::wrap_end();
     }
@@ -884,7 +982,7 @@ class MAD_Event_Mailer {
         $events = self::get_events(false);
         $settings = self::settings();
         $load_id = absint($_GET['campaign_id'] ?? 0);
-        $loaded_campaign = $load_id ? $wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('campaigns')." WHERE id=%d", $load_id)) : null;
+        $loaded_campaign = $load_id ? $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('campaigns'), $load_id ) ) : null;
         $loaded_vars = $loaded_campaign ? (json_decode($loaded_campaign->variables, true) ?: []) : [];
         $selected_id = absint($_GET['template_id'] ?? 0);
         if ($loaded_campaign && !$selected_id) $selected_id = (int)$loaded_campaign->template_id;
@@ -906,8 +1004,21 @@ class MAD_Event_Mailer {
             .mad-em-card{background:#fff;border:1px solid #dcdcde;border-radius:10px;padding:18px 22px;max-width:1180px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
             .mad-em-help{color:#646970;margin-top:6px}.mad-em-varrow{margin:0 0 14px}.mad-em-varrow textarea{max-width:880px}.mad-em-preview-modal{display:none;position:fixed;z-index:100000;inset:0;background:rgba(0,0,0,.45);padding:40px;box-sizing:border-box}.mad-em-preview-box{background:#fff;border-radius:12px;max-width:920px;margin:0 auto;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,.25)}.mad-em-preview-box iframe{width:100%;height:650px;border:1px solid #dcdcde;border-radius:8px;background:#fff}.mad-em-preview-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.mad-em-preview-actions{display:flex;gap:8px;align-items:center}.mad-em-var-label{display:inline-block;margin-bottom:6px}
         </style>
+        <form method="get" class="mad-em-card" style="margin-bottom:14px">
+            <input type="hidden" name="page" value="mad-em">
+            <?php if ($loaded_campaign): ?><input type="hidden" name="campaign_id" value="<?php echo (int)$loaded_campaign->id; ?>"><?php endif; ?>
+            <table class="form-table"><tr><th>模板选择</th><td>
+                <select name="template_id" id="template_id_switch" required>
+                    <option value="">请选择...</option>
+                    <?php foreach($templates as $t): ?><option value="<?php echo (int)$t->id; ?>" <?php selected($selected_id, (int)$t->id); ?>><?php echo esc_html($t->name); ?></option><?php endforeach; ?>
+                </select>
+                <button type="submit" class="button button-secondary">切换模板</button>
+                <p class="mad-em-help">选择模板后点击“切换模板”，页面会刷新并重新生成正文插槽与变量填写框。这个按钮不会发送邮件。</p>
+            </td></tr></table>
+        </form>
         <form method="post" id="mad-em-send" enctype="multipart/form-data" class="mad-em-card"><?php self::nonce('create_campaign'); ?>
-        <table class="form-table"><tr><th>模板选择</th><td><select name="template_id" id="template_id" required><option value="">请选择...</option><?php foreach($templates as $t): ?><option value="<?php echo (int)$t->id; ?>" <?php selected($selected_id, (int)$t->id); ?>><?php echo esc_html($t->name); ?></option><?php endforeach; ?></select> <button type="submit" class="button" name="mad_em_action" value="export_current_csv">导出当前内容的收件人 CSV</button><p class="mad-em-help">切换模板后页面会自动刷新并重新生成变量填写框。</p></td></tr>
+        <input type="hidden" name="template_id" id="template_id" value="<?php echo (int)$selected_id; ?>">
+        <table class="form-table"><tr><th>当前模板</th><td><strong><?php echo $selected_template ? esc_html($selected_template->name) : '未选择模板'; ?></strong> <button type="submit" class="button" name="mad_em_action" value="export_current_csv">导出当前内容的收件人 CSV</button><p class="mad-em-help">如需更换模板，请使用上方“模板选择”区域切换。导出 CSV 会按照当前模板和当前正文内容生成字段。</p></td></tr>
         <tr><th>邮件主题</th><td><input class="regular-text" name="subject" id="subject" required value="<?php echo esc_attr($initial_subject); ?>"><p class="mad-em-help">这里会自动填充模板中的 {{title}} / {{title1}}，不需要再单独设置 title 变量。</p></td></tr>
         <tr><th>收件人来源</th><td><label><input type="radio" name="recipient_mode" value="event" checked> 按活动订阅列表发送</label> &nbsp; <label><input type="radio" name="recipient_mode" value="csv"> 使用本次上传的 CSV 发送</label></td></tr>
         <tr class="recipient-event"><th>收件人活动列表</th><td><select name="event_id"><option value="0">全部已订阅收件人</option><?php foreach($events as $e): ?><option value="<?php echo (int)$e->id; ?>"><?php echo esc_html($e->name); ?></option><?php endforeach; ?></select></td></tr>
@@ -996,7 +1107,6 @@ class MAD_Event_Mailer {
                 return false;
             };
             function bind(){
-                var sel=$('template_id'); if(sel) sel.onchange=function(){ if(this.value) window.location.href='<?php echo esc_js(admin_url('admin.php?page=mad-em&template_id=')); ?>'+encodeURIComponent(this.value); };
                 document.addEventListener('input', function(e){ if(e.target && e.target.closest && e.target.closest('#bodybox')) refreshVars(); });
                 var modes=document.querySelectorAll('input[name="recipient_mode"]');
                 for(var i=0;i<modes.length;i++) modes[i].onchange=function(){ var csv=document.querySelector('.recipient-csv'), ev=document.querySelector('.recipient-event'), checked=document.querySelector('input[name="recipient_mode"]:checked'); if(checked && checked.value==='csv'){ if(csv)csv.style.display='table-row'; if(ev)ev.style.display='none'; } else { if(csv)csv.style.display='none'; if(ev)ev.style.display='table-row'; } };
@@ -1026,8 +1136,16 @@ class MAD_Event_Mailer {
         $where = 'WHERE 1=1'; $args=[];
         if ($status !== '') { $where .= ' AND status=%s'; $args[]=$status; }
         if ($event_id) { $where .= ' AND event_id=%d'; $args[]=$event_id; }
-        $sql = "SELECT * FROM ".self::table('campaigns')." $where ORDER BY id DESC LIMIT 200";
-        $rows = $args ? $wpdb->get_results($wpdb->prepare($sql, $args)) : $wpdb->get_results($sql);
+        $campaigns_table = self::table('campaigns');
+        if ($status_filter && $event_filter) {
+            $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE status=%s AND event_id=%d ORDER BY id DESC LIMIT 200', $campaigns_table, $status_filter, $event_filter ) );
+        } elseif ($status_filter) {
+            $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE status=%s ORDER BY id DESC LIMIT 200', $campaigns_table, $status_filter ) );
+        } elseif ($event_filter) {
+            $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE event_id=%d ORDER BY id DESC LIMIT 200', $campaigns_table, $event_filter ) );
+        } else {
+            $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC LIMIT 200', $campaigns_table ) );
+        }
         ?>
         <form method="get" style="margin:12px 0 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <input type="hidden" name="page" value="mad-em-campaigns">
@@ -1036,7 +1154,7 @@ class MAD_Event_Mailer {
             <button class="button">筛选</button>
             <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=mad-em-campaigns')); ?>">重置</a>
         </form>
-        <table class="widefat striped"><thead><tr><th>ID</th><th>邮件主题</th><th>活动</th><th>状态</th><th>定时时间</th><th>总数</th><th>已发送</th><th>失败</th><th>创建时间</th><th>操作</th></tr></thead><tbody><?php foreach($rows as $r): $event_name = $r->event_id ? $wpdb->get_var($wpdb->prepare("SELECT name FROM ".self::table('events')." WHERE id=%d", $r->event_id)) : '全部 / CSV'; ?>
+        <table class="widefat striped"><thead><tr><th>ID</th><th>邮件主题</th><th>活动</th><th>状态</th><th>定时时间</th><th>总数</th><th>已发送</th><th>失败</th><th>创建时间</th><th>操作</th></tr></thead><tbody><?php foreach($rows as $r): $event_name = $r->event_id ? $wpdb->get_var( $wpdb->prepare( 'SELECT name FROM %i WHERE id=%d', self::table('events'), $r->event_id ) ) : '全部 / CSV'; ?>
         <tr><td><?php echo (int)$r->id; ?></td><td><?php echo esc_html($r->subject); ?></td><td><?php echo esc_html($event_name); ?></td><td><?php echo esc_html(self::status_label($r->status)); ?></td><td><?php echo esc_html($r->scheduled_at); ?></td><td><?php echo (int)$r->total; ?></td><td><?php echo (int)$r->sent; ?></td><td><?php echo (int)$r->failed; ?></td><td><?php echo esc_html($r->created_at); ?></td><td><a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=mad-em&campaign_id='.$r->id)); ?>">调用设置继续编辑</a></td></tr>
         <?php endforeach; if(empty($rows)): ?><tr><td colspan="10">没有找到发送任务。</td></tr><?php endif; ?></tbody></table>
         <p class="description">“调用设置继续编辑”会回到发送页面，并带入该任务的模板、主题和变量内容。不会直接发送，需要你重新点击创建发送任务。</p>
@@ -1048,13 +1166,13 @@ class MAD_Event_Mailer {
         if (!isset($_POST['mad_em_public_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['mad_em_public_nonce'])), 'mad_em_public_register')) return;
         global $wpdb;
         $email = sanitize_email(wp_unslash($_POST['email'] ?? ''));
-        if (isset($_POST['mad_em_public_unsubscribe'])) {
+        if (!empty($_POST['mad_em_public_unsubscribe'])) {
             if (is_email($email)) {
                 $wpdb->update(self::table('subscribers'), ['status'=>'unsubscribed','updated_at'=>self::now()], ['email'=>$email]);
             }
             wp_safe_redirect(add_query_arg('mad_em_unsubscribed', '1', wp_get_referer() ?: self::get_register_page_url())); exit;
         }
-        self::upsert_subscriber($email, sanitize_text_field(wp_unslash($_POST['name'] ?? '')), array_map('absint', $_POST['events'] ?? []), 'shortcode', true);
+        self::upsert_subscriber($email, sanitize_text_field(wp_unslash($_POST['name'] ?? '')), array_map('absint', wp_unslash($_POST['events'] ?? [])), 'shortcode', true);
         wp_safe_redirect(add_query_arg('mad_em_registered', '1', wp_get_referer() ?: self::get_register_page_url())); exit;
     }
 
@@ -1066,9 +1184,9 @@ class MAD_Event_Mailer {
             global $wpdb;
             $qemail = sanitize_email(wp_unslash($_POST['email'] ?? ''));
             if (is_email($qemail)) {
-                $sub = $wpdb->get_row($wpdb->prepare("SELECT * FROM ".self::table('subscribers')." WHERE email=%s", $qemail));
+                $sub = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE email=%s', self::table('subscribers'), $qemail ) );
                 if ($sub) {
-                    $names = $wpdb->get_col($wpdb->prepare("SELECT e.name FROM ".self::table('subscriber_events')." se JOIN ".self::table('events')." e ON e.id=se.event_id WHERE se.subscriber_id=%d", $sub->id));
+                    $names = $wpdb->get_col( $wpdb->prepare( 'SELECT e.name FROM %i se JOIN %i e ON e.id=se.event_id WHERE se.subscriber_id=%d', self::table('subscriber_events'), self::table('events'), $sub->id ) );
                     $query_result = ['found'=>true,'name'=>$sub->name,'email'=>$sub->email,'status'=>$sub->status,'events'=>implode('、', $names) ?: '未选择具体活动'];
                 } else { $query_result = ['found'=>false,'email'=>$qemail]; }
             }
