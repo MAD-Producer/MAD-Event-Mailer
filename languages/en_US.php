@@ -56,6 +56,7 @@ return [
     '对应的正文内容' => 'body content',
     '正文里也可以继续写变量，例如' => 'You can also use variables in the body, such as',
     '如果上传 CSV，CSV 里有同名列时会给每个收件人填不同内容。' => 'If a CSV is uploaded, matching columns will provide different values for each recipient.',
+    '正文里也可以继续写变量，例如 <code>{{score}}</code>、<code>{{rank}}</code>、<code>{{comment}}</code>。如果你上传 CSV，CSV 里有同名列时会给每个收件人填不同内容。' => 'You can also use variables in the body, such as <code>{{score}}</code>, <code>{{rank}}</code>, and <code>{{comment}}</code>. If you upload a CSV, matching columns will provide different values for each recipient.',
     '邮件底部退订按钮' => 'Email Footer Unsubscribe Button',
     '在邮件底部自动添加退订按钮' => 'Automatically add an unsubscribe button to the email footer',
     '语言：' => 'Language:',
