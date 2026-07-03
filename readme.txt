@@ -4,7 +4,7 @@ Tags: email, smtp, newsletter, event, html email, csv
 Requires at least: 5.8
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 2.2.1
+Stable tag: 2.2.2
 License: GPL v2
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -35,6 +35,14 @@ Yes. The plugin includes a default English template and an English interface lan
 Yes. Use variables such as `{{score}}`, `{{rank}}`, and `{{comment}}`, then include matching CSV columns.
 
 == Changelog ==
+
+= 2.2.2 =
+* Updated plugin metadata for GitHub release.
+* Added GPL v2 license header.
+* Updated author to MAD Producer Studio with GitHub author URL.
+* Added English README and Chinese README.
+* Improved English translations for admin, campaign, template, subscriber, preview, and JavaScript status text.
+* Changed admin and public language defaults to follow the WordPress site language.
 
 = 2.2.1 =
 * Updated plugin metadata for GitHub release.
