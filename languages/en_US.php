@@ -15,6 +15,7 @@ return [
     '端口' => 'Port',
     '邮箱账号' => 'Email Account',
     '邮箱密码' => 'Email Password',
+    '测试Email' => 'Test Email',
     '发件邮箱' => 'From Email',
     '发件人姓名' => 'Sender Name',
     '回复地址' => 'Reply-To Email',
