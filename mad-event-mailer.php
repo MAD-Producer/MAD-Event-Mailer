@@ -504,6 +504,7 @@ class MAD_Event_Mailer {
         if (empty($_POST['mad_em_action'])) return;
         $action = sanitize_text_field(wp_unslash($_POST['mad_em_action']));
         $nonce_action = in_array($action, ['save_campaign_draft','export_current_csv','preview_current_static'], true) ? 'create_campaign' : $action;
+        if ($action === 'export_subscribers_csv') $nonce_action = 'export_subscribers_csv';
         if (!current_user_can('manage_options')) return;
         check_admin_referer($nonce_action, 'mad_em_nonce');
         global $wpdb;
@@ -608,8 +609,12 @@ class MAD_Event_Mailer {
         }
 
         if ($action === 'save_subscriber') {
-            self::upsert_subscriber(sanitize_email(wp_unslash($_POST['email'] ?? '')), sanitize_text_field(wp_unslash($_POST['name'] ?? '')), array_map('absint', wp_unslash($_POST['events'] ?? [])), 'manual');
+            self::save_subscriber_from_post();
             add_action('admin_notices', fn()=>self::notice('收件人已保存。'));
+        }
+
+        if ($action === 'export_subscribers_csv') {
+            self::export_subscribers_csv_from_post();
         }
 
         if ($action === 'import_csv') {
@@ -720,6 +725,23 @@ class MAD_Event_Mailer {
         return in_array($lang, ['zh','en'], true) ? $lang : 'zh';
     }
 
+    private static function language_label($lang) {
+        return self::normalize_subscription_language($lang) === 'en' ? '英文' : '中文';
+    }
+
+    private static function event_language_value($event_id, $lang) {
+        return absint($event_id) . '|' . self::normalize_subscription_language($lang);
+    }
+
+    private static function parse_event_language_value($value) {
+        $parts = explode('|', (string)$value);
+        return [absint($parts[0] ?? 0), self::normalize_subscription_language($parts[1] ?? 'zh')];
+    }
+
+    private static function event_language_label($event, $lang) {
+        return trim((string)$event->name) . ' ' . self::language_label($lang);
+    }
+
     private static function get_register_page_url($lang = '') {
         $s = self::settings();
         $lang = self::normalize_subscription_language($lang ?: 'zh');
@@ -811,6 +833,73 @@ class MAD_Event_Mailer {
         return wp_mail($email, $subject, $body, ['Content-Type: text/html; charset=UTF-8']);
     }
 
+    private static function subscriber_event_language_values($subscriber_id) {
+        global $wpdb;
+        $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT event_id, language FROM %i WHERE subscriber_id=%d', self::table('subscriber_events'), $subscriber_id ) );
+        $values = [];
+        foreach ($rows as $row) $values[] = self::event_language_value($row->event_id, $row->language);
+        return $values;
+    }
+
+    private static function save_subscriber_from_post() {
+        global $wpdb;
+        $id = absint(wp_unslash($_POST['id'] ?? 0));
+        $email = sanitize_email(wp_unslash($_POST['email'] ?? ''));
+        if (!is_email($email)) return 0;
+        $name = sanitize_text_field(wp_unslash($_POST['name'] ?? ''));
+        $status = in_array(sanitize_text_field(wp_unslash($_POST['status'] ?? 'subscribed')), ['subscribed','unsubscribed'], true) ? sanitize_text_field(wp_unslash($_POST['status'])) : 'subscribed';
+        $table = self::table('subscribers');
+        $existing_id = (int)$wpdb->get_var( $wpdb->prepare( 'SELECT id FROM %i WHERE email=%s', $table, $email ) );
+        if ($id && $existing_id && $existing_id !== $id) return 0;
+        $data = ['email'=>$email, 'name'=>$name, 'status'=>$status, 'source'=>'manual', 'updated_at'=>self::now()];
+        if ($id) $wpdb->update($table, $data, ['id'=>$id]);
+        elseif ($existing_id) { $id = $existing_id; $wpdb->update($table, $data, ['id'=>$id]); }
+        else { $data['created_at']=self::now(); $wpdb->insert($table, $data); $id=(int)$wpdb->insert_id; }
+        $wpdb->delete(self::table('subscriber_events'), ['subscriber_id'=>$id]);
+        $lists = isset($_POST['event_lists']) && is_array($_POST['event_lists']) ? wp_unslash($_POST['event_lists']) : [];
+        foreach ($lists as $list_value) {
+            [$event_id, $language] = self::parse_event_language_value($list_value);
+            if ($event_id) $wpdb->replace(self::table('subscriber_events'), ['subscriber_id'=>$id, 'event_id'=>$event_id, 'language'=>$language], ['%d','%d','%s']);
+        }
+        return $id;
+    }
+
+    private static function subscriber_filter_parts($value) {
+        if ($value === '' || $value === '0') return [0, ''];
+        return self::parse_event_language_value($value);
+    }
+
+    private static function get_filtered_subscribers($filter_value = '0', $limit = 200) {
+        global $wpdb;
+        [$event_id, $language] = self::subscriber_filter_parts($filter_value);
+        $subs = self::table('subscribers'); $se = self::table('subscriber_events');
+        if ($event_id && $language) {
+            return $wpdb->get_results( $wpdb->prepare( 'SELECT DISTINCT s.* FROM %i s INNER JOIN %i se ON s.id=se.subscriber_id WHERE se.event_id=%d AND se.language=%s ORDER BY s.id DESC LIMIT %d', $subs, $se, $event_id, $language, $limit ) );
+        }
+        return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC LIMIT %d', $subs, $limit ) );
+    }
+
+    private static function subscriber_event_labels($subscriber_id) {
+        global $wpdb;
+        $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT e.name, se.language FROM %i se JOIN %i e ON e.id=se.event_id WHERE se.subscriber_id=%d ORDER BY e.sort_order ASC, e.id DESC, se.language ASC', self::table('subscriber_events'), self::table('events'), $subscriber_id ) );
+        $labels = [];
+        foreach ($rows as $row) $labels[] = $row->name . ' ' . self::language_label($row->language);
+        return $labels;
+    }
+
+    private static function export_subscribers_csv_from_post() {
+        $filter_value = sanitize_text_field(wp_unslash($_POST['subscriber_filter'] ?? '0'));
+        $rows = self::get_filtered_subscribers($filter_value, 100000);
+        while (ob_get_level()) { ob_end_clean(); }
+        nocache_headers();
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename=mad-mailer-subscribers.csv');
+        echo "\xEF\xBB\xBF";
+        echo self::csv_line(['email','name','status','events']);
+        foreach ($rows as $row) echo self::csv_line([$row->email, $row->name, $row->status, implode('; ', self::subscriber_event_labels($row->id))]);
+        exit;
+    }
+
     private static function import_csv($path) {
         $rows = self::parse_csv_file($path);
         if (empty($rows)) return 0;
@@ -840,7 +929,7 @@ class MAD_Event_Mailer {
         $template_id = absint(wp_unslash($_POST['template_id'] ?? 0));
         $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
         if (!$template) return 0;
-        $event_id = absint(wp_unslash($_POST['event_id'] ?? 0));
+        [$event_id, $recipient_language] = self::parse_event_language_value(wp_unslash($_POST['event_id'] ?? '0|zh'));
         $subject = sanitize_text_field(wp_unslash($_POST['subject'] ?? $template->subject));
         $vars = [];
         $posted_var = isset($_POST['var']) && is_array($_POST['var']) ? wp_unslash($_POST['var']) : [];
@@ -855,6 +944,7 @@ class MAD_Event_Mailer {
         $vars['__include_unsubscribe'] = !empty($_POST['include_unsubscribe']) ? 1 : 0;
         $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'zh'));
         $vars['__unsubscribe_lang'] = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'zh';
+        $vars['__recipient_language'] = $recipient_language;
         // 变量可能写在“正文内容”里，例如正文中包含 {{score}}，这里要一起扫描，方便 CSV 逐人填充。
         $scan_text = $template->html . ' ' . $template->subject . ' ' . implode(' ', array_map('strval', $vars));
         $all_vars = self::extract_vars($scan_text);
@@ -874,16 +964,18 @@ class MAD_Event_Mailer {
                 $recipient_csv = self::valid_uploaded_file('recipient_csv', ['csv']);
                 if ($recipient_csv) self::prepare_logs_from_template_csv($cid, $recipient_csv, $all_vars);
             } else {
-                self::prepare_logs($cid, $event_id);
+                self::prepare_logs($cid, $event_id, $recipient_language);
             }
         }
         return $cid;
     }
 
-    private static function prepare_logs($campaign_id, $event_id=0) {
+    private static function prepare_logs($campaign_id, $event_id=0, $language='') {
         global $wpdb;
         $subs = self::table('subscribers'); $se = self::table('subscriber_events'); $logs = self::table('campaign_logs');
-        if ($event_id) $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT DISTINCT s.* FROM %i s INNER JOIN %i se ON s.id=se.subscriber_id WHERE s.status=%s AND se.event_id=%d', $subs, $se, 'subscribed', $event_id ) );
+        $language = $language ? self::normalize_subscription_language($language) : '';
+        if ($event_id && $language) $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT DISTINCT s.* FROM %i s INNER JOIN %i se ON s.id=se.subscriber_id WHERE s.status=%s AND se.event_id=%d AND se.language=%s', $subs, $se, 'subscribed', $event_id, $language ) );
+        elseif ($event_id) $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT DISTINCT s.* FROM %i s INNER JOIN %i se ON s.id=se.subscriber_id WHERE s.status=%s AND se.event_id=%d', $subs, $se, 'subscribed', $event_id ) );
         else $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE status=%s', $subs, 'subscribed' ) );
         foreach ($rows as $s) $wpdb->insert($logs, ['campaign_id'=>$campaign_id, 'subscriber_id'=>$s->id, 'email'=>$s->email, 'status'=>'pending']);
         $wpdb->update(self::table('campaigns'), ['total'=>count($rows)], ['id'=>$campaign_id]);
@@ -1042,15 +1134,29 @@ class MAD_Event_Mailer {
     }
 
     public static function page_subscribers() {
-        global $wpdb; self::wrap_start('收件人'); $events=self::get_events(false); ?>
+        global $wpdb;
+        $events = self::get_events(false);
+        $edit_id = absint($_GET['edit'] ?? 0);
+        $edit = $edit_id ? $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('subscribers'), $edit_id ) ) : null;
+        $selected_lists = $edit ? self::subscriber_event_language_values($edit->id) : [];
+        $filter_value = sanitize_text_field(wp_unslash($_GET['subscriber_filter'] ?? '0'));
+        $rows = self::get_filtered_subscribers($filter_value, 200);
+        $total = count($rows);
+        self::wrap_start('收件人'); ?>
         <p>支持的 CSV 列名：<code>email,name,events</code>，也兼容 <code>邮箱,姓名,活动</code>。活动可以填写活动名称或 slug，多个活动用逗号分隔。</p>
         <form method="post" enctype="multipart/form-data"><?php self::nonce('import_csv'); ?><input type="file" name="csv_file" accept=".csv" required> 默认活动： <select name="default_event"><option value="0">不指定</option><?php foreach($events as $e) echo '<option value="'.(int)$e->id.'">'.esc_html($e->name).'</option>'; ?></select> <?php submit_button('导入 CSV', 'secondary', 'submit', false); ?></form>
-        <h2>添加收件人</h2><form method="post"><?php self::nonce('save_subscriber'); ?><input name="email" placeholder="email@example.com" required> <input name="name" placeholder="姓名"> <?php foreach($events as $e): ?><label style="margin-right:12px"><input type="checkbox" name="events[]" value="<?php echo (int)$e->id; ?>"> <?php echo esc_html($e->name); ?></label><?php endforeach; ?> <?php submit_button('保存', 'secondary', 'submit', false); ?></form>
-        <h2>最近收件人</h2><table class="widefat striped"><thead><tr><th>邮箱</th><th>姓名</th><th>订阅活动</th><th>状态</th><th>操作</th></tr></thead><tbody><?php
-        $rows=$wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC LIMIT 200', self::table('subscribers') ) ); foreach($rows as $r):
-        $names=$wpdb->get_col( $wpdb->prepare( 'SELECT e.name FROM %i se JOIN %i e ON e.id=se.event_id WHERE se.subscriber_id=%d', self::table('subscriber_events'), self::table('events'), $r->id ) ); ?>
-        <tr><td><?php echo esc_html($r->email); ?></td><td><?php echo esc_html($r->name); ?></td><td><?php echo esc_html(implode(', ', $names)); ?></td><td><?php echo esc_html(self::status_label($r->status)); ?></td><td><form method="post"><?php self::nonce('delete_subscriber'); ?><input type="hidden" name="id" value="<?php echo (int)$r->id; ?>"><button class="button-link-delete" onclick="return confirm('确定删除这个收件人吗？')">删除</button></form></td></tr>
-        <?php endforeach; ?></tbody></table><?php self::wrap_end();
+        <h2><?php echo $edit ? '编辑收件人' : '添加收件人'; ?></h2>
+        <form method="post"><?php self::nonce('save_subscriber'); ?><input type="hidden" name="id" value="<?php echo esc_attr($edit->id ?? 0); ?>">
+            <p><input name="email" placeholder="email@example.com" required value="<?php echo esc_attr($edit->email ?? ''); ?>"> <input name="name" placeholder="姓名" value="<?php echo esc_attr($edit->name ?? ''); ?>"> <select name="status"><option value="subscribed" <?php selected($edit->status ?? 'subscribed','subscribed'); ?>>已订阅</option><option value="unsubscribed" <?php selected($edit->status ?? 'subscribed','unsubscribed'); ?>>已退订</option></select></p>
+            <p><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): $value=self::event_language_value($e->id,$list_lang); ?><label style="margin-right:12px"><input type="checkbox" name="event_lists[]" value="<?php echo esc_attr($value); ?>" <?php checked(in_array($value, $selected_lists, true)); ?>> <?php echo esc_html(self::event_language_label($e,$list_lang)); ?></label><?php endforeach; endforeach; ?></p>
+            <?php submit_button($edit ? '更新收件人' : '保存', 'secondary', 'submit', false); ?> <?php if($edit): ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=mad-em-subscribers')); ?>">取消编辑</a><?php endif; ?>
+        </form>
+        <h2>收件人列表</h2>
+        <form method="get" style="margin:12px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input type="hidden" name="page" value="mad-em-subscribers"><label>按活动语言筛选 <select name="subscriber_filter"><option value="0">全部收件人</option><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): $value=self::event_language_value($e->id,$list_lang); ?><option value="<?php echo esc_attr($value); ?>" <?php selected($filter_value,$value); ?>><?php echo esc_html(self::event_language_label($e,$list_lang)); ?></option><?php endforeach; endforeach; ?></select></label><?php submit_button('筛选', 'secondary', 'submit', false); ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=mad-em-subscribers')); ?>">重置</a></form>
+        <form method="post" style="margin:0 0 12px"><?php self::nonce('export_subscribers_csv'); ?><input type="hidden" name="subscriber_filter" value="<?php echo esc_attr($filter_value); ?>"><?php submit_button('导出当前筛选 CSV', 'secondary', 'submit', false); ?> <span class="description">当前筛选共 <?php echo (int)$total; ?> 个收件人。</span></form>
+        <table class="widefat striped"><thead><tr><th>邮箱</th><th>姓名</th><th>订阅活动</th><th>状态</th><th>操作</th></tr></thead><tbody><?php foreach($rows as $r): $names=self::subscriber_event_labels($r->id); ?>
+        <tr><td><?php echo esc_html($r->email); ?></td><td><?php echo esc_html($r->name); ?></td><td><?php echo esc_html(implode(', ', $names)); ?></td><td><?php echo esc_html(self::status_label($r->status)); ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=mad-em-subscribers&edit='.$r->id)); ?>">编辑</a> <form method="post" style="display:inline"><?php self::nonce('delete_subscriber'); ?><input type="hidden" name="id" value="<?php echo (int)$r->id; ?>"><button class="button-link-delete" onclick="return confirm('确定删除这个收件人吗？')">删除</button></form></td></tr>
+        <?php endforeach; if(empty($rows)): ?><tr><td colspan="5">没有找到收件人。</td></tr><?php endif; ?></tbody></table><?php self::wrap_end();
     }
 
     public static function page_send() {
@@ -1098,7 +1204,7 @@ class MAD_Event_Mailer {
         <table class="form-table"><tr><th>当前模板</th><td><strong><?php echo $selected_template ? esc_html($selected_template->name) : '未选择模板'; ?></strong> <button type="submit" class="button" name="mad_em_action" value="export_current_csv">导出当前内容的收件人 CSV</button><p class="mad-em-help">如需更换模板，请使用上方“模板选择”区域切换。导出 CSV 会按照当前模板和当前正文内容生成字段。</p></td></tr>
         <tr><th>邮件主题</th><td><input class="regular-text" name="subject" id="subject" required value="<?php echo esc_attr($initial_subject); ?>"><p class="mad-em-help">这里会自动填充模板中的 {{title}} / {{title1}}，不需要再单独设置 title 变量。</p></td></tr>
         <tr><th>收件人来源</th><td><label><input type="radio" name="recipient_mode" value="event" checked> 按活动订阅列表发送</label> &nbsp; <label><input type="radio" name="recipient_mode" value="csv"> 使用本次上传的 CSV 发送</label></td></tr>
-        <tr class="recipient-event"><th>收件人活动列表</th><td><select name="event_id"><option value="0">全部已订阅收件人</option><?php foreach($events as $e): ?><option value="<?php echo (int)$e->id; ?>"><?php echo esc_html($e->name); ?></option><?php endforeach; ?></select></td></tr>
+        <tr class="recipient-event"><th>收件人活动列表</th><td><select name="event_id"><option value="0">全部已订阅收件人</option><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): ?><option value="<?php echo esc_attr(self::event_language_value($e->id, $list_lang)); ?>"><?php echo esc_html(self::event_language_label($e, $list_lang)); ?></option><?php endforeach; endforeach; ?></select><p class="mad-em-help">后台按语言拆分收件人列表；前台仍只显示活动名称和语言选择。</p></td></tr>
         <tr class="recipient-csv" style="display:none"><th>上传收件人 CSV</th><td><input type="file" name="recipient_csv" accept=".csv"><p class="mad-em-help">先选择邮件模板，再点击“导出该模板的收件人 CSV”。填好 email、name、events 和额外变量后上传。name 会自动用于 {{name}} / {{name1}}。</p></td></tr>
         <tr><th>正文内容</th><td><div id="bodybox">
             <?php if (!$selected_template): ?>
@@ -1269,7 +1375,7 @@ class MAD_Event_Mailer {
             if (is_email($qemail)) {
                 $sub = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE email=%s', self::table('subscribers'), $qemail ) );
                 if ($sub) {
-                    $names = $wpdb->get_col( $wpdb->prepare( 'SELECT e.name FROM %i se JOIN %i e ON e.id=se.event_id WHERE se.subscriber_id=%d', self::table('subscriber_events'), self::table('events'), $sub->id ) );
+                    $names = self::subscriber_event_labels($sub->id);
                     $query_result = ['found'=>true,'name'=>$sub->name,'email'=>$sub->email,'status'=>$sub->status,'events'=>implode('、', $names) ?: '未选择具体活动'];
                 } else { $query_result = ['found'=>false,'email'=>$qemail]; }
             }

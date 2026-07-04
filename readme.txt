@@ -38,11 +38,13 @@ Yes. Use variables such as `{{score}}`, `{{rank}}`, and `{{comment}}`, then incl
 
 = 2.2.3 =
 * Added bilingual subscription language selection on the public shortcode form.
+* Splits backend recipient lists by event language, such as Site Announcement Chinese and Site Announcement English.
 * Stores event subscriptions by recipient language for Chinese and English lists.
 * Sends subscription and unsubscribe confirmation emails in the selected subscription language.
 * Added separate Chinese and English subscription/unsubscribe page URLs.
 * Updated the default sender name away from No-reply.
 * Added drag-and-drop event ordering for frontend display.
+* Added subscriber editing, event-language filtering, counts, and filtered CSV export.
 
 = 2.2.1 =
 * Updated plugin metadata for GitHub release.
