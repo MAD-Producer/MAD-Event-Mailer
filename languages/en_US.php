@@ -253,4 +253,13 @@ return [
     '变量统一使用 <code>{{变量名}}</code>，只能包含英文、数字、下划线或短横线。' => 'Variables use <code>{{variable_name}}</code> and may contain letters, numbers, underscores, or hyphens only.',
     '通用模板建议保留一个正文插槽：<code>{{message1}}</code> 或 <code>{{message}}</code>。' => 'A general template should keep one body slot: <code>{{message1}}</code> or <code>{{message}}</code>.',
     '测试邮箱' => 'Test Email Address',
+    '中文订阅 / 退订固定链接' => 'Chinese Subscription / Unsubscribe Page URL',
+    '英文订阅 / 退订固定链接' => 'English Subscription / Unsubscribe Page URL',
+    '通用固定链接，未设置语言专属链接时作为备用。' => 'General URL used as a fallback when language-specific URLs are not set.',
+    '中文订阅确认、退订入口和邮件底部中文退订链接优先使用这个地址。' => 'Chinese confirmation, unsubscribe entry, and Chinese footer links use this URL first.',
+    '订阅语言 / Subscription Language' => 'Subscription Language',
+    '拖拽' => 'Drag',
+    '保存活动排序' => 'Save Event Order',
+    '活动排序已保存。' => 'Event order saved.',
+    '排序' => 'Order',
 ];
