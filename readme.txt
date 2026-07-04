@@ -2,7 +2,7 @@
 Contributors: MAD Producer Studio
 Tags: email, smtp, newsletter, event, html email, csv
 Requires at least: 5.8
-Tested up to: 6.8
+Tested up to: 7.0
 Requires PHP: 7.4
 Stable tag: 2.2.3
 License: GPL v2
