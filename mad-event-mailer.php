@@ -27,7 +27,7 @@ class MAD_Event_Mailer {
         add_action('admin_post_mad_em_preview_template', [__CLASS__, 'preview_template_page']);
         add_action('wp_ajax_mad_em_preview_send', [__CLASS__, 'ajax_preview_send']);
         add_action('wp_ajax_mad_em_test_send', [__CLASS__, 'ajax_test_send']);
-        add_action('phpmailer_init', [__CLASS__, 'smtp_config']);
+        add_action('phpmailer_init', [__CLASS__, 'smtp_config'], 1000);
         add_filter('wp_mail_from', [__CLASS__, 'mail_from']);
         add_filter('wp_mail_from_name', [__CLASS__, 'mail_from_name']);
         add_shortcode('mad_email_register', [__CLASS__, 'shortcode_register']);
@@ -149,7 +149,7 @@ class MAD_Event_Mailer {
     private static function table($name) { global $wpdb; return $wpdb->prefix . 'mad_em_' . $name; }
     private static function now() { return current_time('mysql'); }
     private static function settings() { return wp_parse_args(get_option(self::OPT, []), [
-        'host'=>'', 'port'=>'465', 'secure'=>'ssl', 'username'=>'', 'password'=>'', 'from_email'=>'', 'from_name'=>'MAD Producer 麦德工坊', 'sender_name'=>'MAD Producer 麦德工坊', 'reply_to'=>'', 'batch_size'=>30, 'register_page_url'=>'', 'register_page_url_zh'=>'', 'register_page_url_en'=>'', 'default_unsubscribe_button'=>1, 'default_unsubscribe_lang'=>'zh', 'ui_language'=>'auto', 'public_language'=>'auto'
+        'host'=>'', 'port'=>'465', 'secure'=>'ssl', 'username'=>'', 'password'=>'', 'from_email'=>'', 'from_name'=>'', 'sender_name'=>'', 'reply_to'=>'', 'batch_size'=>30, 'register_page_url'=>'', 'register_page_url_zh'=>'', 'register_page_url_en'=>'', 'default_unsubscribe_button'=>1, 'default_unsubscribe_lang'=>'zh', 'ui_language'=>'auto', 'public_language'=>'auto'
     ]); }
 
     private static function looks_like_no_reply($name) {
@@ -171,7 +171,8 @@ class MAD_Event_Mailer {
             $name = trim((string)$candidate);
             if ($name !== '' && !self::looks_like_no_reply($name)) return $name;
         }
-        return 'MAD Producer 麦德工坊';
+        $site_name = trim(wp_specialchars_decode(get_bloginfo('name'), ENT_QUOTES));
+        return $site_name ?: 'WordPress';
     }
 
     private static function sender_email() {
@@ -190,6 +191,19 @@ class MAD_Event_Mailer {
 
     public static function mail_from_name($name) {
         return self::sender_name();
+    }
+
+    private static function mail_headers($extra = []) {
+        $headers = ['Content-Type: text/html; charset=UTF-8'];
+        $from_email = self::sender_email();
+        if ($from_email) {
+            $from_name = str_replace(["\r", "\n"], '', self::sender_name());
+            $headers[] = 'From: "' . addcslashes($from_name, '"\\') . '" <' . $from_email . '>';
+        }
+        $s = self::settings();
+        $reply_to = sanitize_email($s['reply_to'] ?? '');
+        if (is_email($reply_to)) $headers[] = 'Reply-To: ' . $reply_to;
+        return array_merge($headers, (array)$extra);
     }
 
     private static function current_ui_language() {
@@ -307,7 +321,11 @@ class MAD_Event_Mailer {
         $phpmailer->Username = $s['username'];
         $phpmailer->Password = $s['password'];
         $phpmailer->SMTPSecure = $s['secure'];
-        if (!empty($s['reply_to'])) $phpmailer->addReplyTo($s['reply_to']);
+        $reply_to = sanitize_email($s['reply_to'] ?? '');
+        if (is_email($reply_to)) {
+            if (method_exists($phpmailer, 'clearReplyTos')) $phpmailer->clearReplyTos();
+            $phpmailer->addReplyTo($reply_to);
+        }
     }
 
     public static function menu() {
@@ -541,7 +559,7 @@ class MAD_Event_Mailer {
         }
         $body = self::render_template(self::ensure_unsubscribe_notice($template->html, $unsub_lang, $include_unsub), $vars);
         $subj = self::render_template($subject ?: $template->subject, $vars);
-        $ok = wp_mail($to, $subj, $body, ['Content-Type: text/html; charset=UTF-8']);
+        $ok = wp_mail($to, $subj, $body, self::mail_headers());
         if (!$ok) wp_send_json_error(['message'=>'测试邮件发送失败，请检查 SMTP 设置或服务器日志。']);
         wp_send_json_success(['message'=>'测试邮件已发送到 '.$to]);
     }
@@ -557,8 +575,7 @@ class MAD_Event_Mailer {
         global $wpdb;
 
         if ($action === 'save_settings') {
-            $sender_name = sanitize_text_field(wp_unslash($_POST['sender_name'] ?? ($_POST['from_name'] ?? 'MAD Producer 麦德工坊')));
-            if ($sender_name === '' || self::looks_like_no_reply($sender_name)) $sender_name = 'MAD Producer 麦德工坊';
+            $sender_name = sanitize_text_field(wp_unslash($_POST['sender_name'] ?? ($_POST['from_name'] ?? '')));
             update_option(self::OPT, [
                 'host'=>sanitize_text_field(wp_unslash($_POST['host'] ?? '')), 'port'=>sanitize_text_field(wp_unslash($_POST['port'] ?? '465')),
                 'secure'=>sanitize_text_field(wp_unslash($_POST['secure'] ?? 'ssl')), 'username'=>sanitize_text_field(wp_unslash($_POST['username'] ?? '')),
@@ -573,7 +590,7 @@ class MAD_Event_Mailer {
                 'ui_language'=>in_array(sanitize_text_field(wp_unslash($_POST['ui_language'] ?? 'auto')), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['ui_language'])) : 'auto',
                 'public_language'=>in_array(sanitize_text_field(wp_unslash($_POST['public_language'] ?? 'auto')), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['public_language'])) : 'auto'
             ]);
-            add_action('admin_notices', fn()=>self::notice('设置已保存。发件人姓名已更新为：'.$sender_name));
+            add_action('admin_notices', fn()=>self::notice($sender_name !== '' ? '设置已保存。发件人姓名已更新为：'.$sender_name : '设置已保存。发件人姓名留空时会使用 WordPress 站点名称。'));
         }
 
 
@@ -772,6 +789,12 @@ class MAD_Event_Mailer {
         return in_array($lang, ['zh','en'], true) ? $lang : 'zh';
     }
 
+    private static function request_subscription_language() {
+        if (isset($_POST['subscription_language'])) return self::normalize_subscription_language(sanitize_text_field(wp_unslash($_POST['subscription_language'])));
+        if (isset($_GET['mad_em_lang'])) return self::normalize_subscription_language(sanitize_text_field(wp_unslash($_GET['mad_em_lang'])));
+        return self::is_english_language(self::current_public_language()) ? 'en' : 'zh';
+    }
+
     private static function language_label($lang) {
         return self::normalize_subscription_language($lang) === 'en' ? '英文' : '中文';
     }
@@ -956,17 +979,17 @@ class MAD_Event_Mailer {
         if ($type === 'unsubscribe') {
             if ($language === 'en') {
                 $subject = 'Subscription cancelled';
-                $message = '<p>Your event notification subscription has been cancelled.</p><p>Subscription language: English.</p>';
+                $message = '<p>Your event notification subscription has been cancelled.</p>';
             } else {
                 $subject = '订阅已退订';
-                $message = '<p>你的活动通知订阅已经退订。</p><p>订阅语言：中文。</p>';
+                $message = '<p>你的活动通知订阅已经退订。</p>';
             }
         } elseif ($language === 'en') {
             $subject = 'Subscription confirmed';
-            $message = '<p>Welcome to MAD Producer event notifications. Your subscription has been saved successfully.</p><p>Subscription language: English.</p>';
+            $message = '<p>Welcome to MAD Producer event notifications. Your subscription has been saved successfully.</p>';
         } else {
             $subject = '订阅已确认';
-            $message = '<p>欢迎使用 MAD Producer 活动通知。你的订阅已经保存成功。</p><p>订阅语言：中文。</p>';
+            $message = '<p>欢迎使用 MAD Producer 活动通知。你的订阅已经保存成功。</p>';
         }
         $template_html = self::default_subscription_template_html($language);
         $vars = [
@@ -983,7 +1006,7 @@ class MAD_Event_Mailer {
             if (!array_key_exists($v, $vars)) $vars[$v] = '';
         }
         $body = self::render_template($template_html, $vars);
-        return wp_mail($email, $subject, $body, ['Content-Type: text/html; charset=UTF-8']);
+        return wp_mail($email, $subject, $body, self::mail_headers());
     }
 
     private static function subscriber_event_language_values($subscriber_id) {
@@ -1187,7 +1210,7 @@ class MAD_Event_Mailer {
                 $unsub_lang = in_array(($vars['__unsubscribe_lang'] ?? 'zh'), ['zh','en'], true) ? $vars['__unsubscribe_lang'] : 'zh';
                 $vars['unsubscribe_url'] = self::get_unsubscribe_url($unsub_lang);
                 $body = self::render_template(self::ensure_unsubscribe_notice($template->html, $unsub_lang, $include_unsub), $vars);
-                $ok = wp_mail($log->email, $subject, $body, ['Content-Type: text/html; charset=UTF-8']);
+                $ok = wp_mail($log->email, $subject, $body, self::mail_headers());
                 $wpdb->update($log_table, ['status'=>$ok?'sent':'failed', 'error'=>$ok?'':'wp_mail failed', 'sent_at'=>self::now()], ['id'=>$log->id]);
                 $ok ? $wpdb->query( $wpdb->prepare( 'UPDATE %i SET sent=sent+1 WHERE id=%d', $campaign_table, $c->id ) ) : null;
                 if (!$ok) $wpdb->query( $wpdb->prepare( 'UPDATE %i SET failed=failed+1 WHERE id=%d', $campaign_table, $c->id ) );
@@ -1198,7 +1221,9 @@ class MAD_Event_Mailer {
     }
 
     public static function page_settings() {
-        $s = self::settings(); self::wrap_start('SMTP 设置'); ?>
+        $s = self::settings();
+        $sender_value = trim((string)($s['sender_name'] ?? ($s['from_name'] ?? '')));
+        self::wrap_start('SMTP 设置'); ?>
         <form method="post"><?php self::nonce('save_settings'); ?>
         <table class="form-table"><tr><th>SMTP 地址</th><td><input class="regular-text" name="host" value="<?php echo esc_attr($s['host']); ?>" placeholder="smtp.feishu.cn"></td></tr>
         <tr><th>发送协议</th><td><select name="secure"><option value="ssl" <?php selected($s['secure'],'ssl'); ?>>ssl</option><option value="tls" <?php selected($s['secure'],'tls'); ?>>tls</option></select></td></tr>
@@ -1206,7 +1231,7 @@ class MAD_Event_Mailer {
         <tr><th>邮箱账号</th><td><input class="regular-text" name="username" value="<?php echo esc_attr($s['username']); ?>"></td></tr>
         <tr><th>邮箱密码</th><td><input class="regular-text" type="password" name="password" value="<?php echo esc_attr($s['password']); ?>"></td></tr>
         <tr><th>发件邮箱</th><td><input class="regular-text" name="from_email" value="<?php echo esc_attr($s['from_email']); ?>"></td></tr>
-        <tr><th>发件人姓名</th><td><input class="regular-text" name="sender_name" value="<?php echo esc_attr(self::sender_name()); ?>"><p class="description">邮件里显示的发件人名称，例如：MAD Producer 麦德工坊。保存后会同步用于 SMTP 发信 From Name。</p></td></tr>
+        <tr><th>发件人姓名</th><td><input class="regular-text" name="sender_name" value="<?php echo esc_attr($sender_value); ?>" placeholder="MAD Producer 麦德工坊"><p class="description">邮件里显示的发件人名称。留空时发送邮件会使用 WordPress 站点名称。</p></td></tr>
         <tr><th>回复地址</th><td><input class="regular-text" name="reply_to" value="<?php echo esc_attr($s['reply_to']); ?>"></td></tr>
         <tr><th>每批发送数量</th><td><input type="number" name="batch_size" value="<?php echo esc_attr($s['batch_size']); ?>"> 封 / 每次定时任务</td></tr>
         <tr><th>订阅 / 退订页面固定链接</th><td><input class="regular-text" name="register_page_url" value="<?php echo esc_attr($s['register_page_url']); ?>" placeholder="https://example.com/mail-subscribe/"><p class="description">通用固定链接，未设置语言专属链接时作为备用。</p></td></tr>
@@ -1495,7 +1520,7 @@ class MAD_Event_Mailer {
         global $wpdb;
         $email = sanitize_email(wp_unslash($_POST['email'] ?? ''));
         $name = sanitize_text_field(wp_unslash($_POST['name'] ?? ''));
-        $language = self::normalize_subscription_language(sanitize_text_field(wp_unslash($_POST['subscription_language'] ?? ($_GET['mad_em_lang'] ?? 'zh'))));
+        $language = self::request_subscription_language();
         if (!empty($_POST['mad_em_public_unsubscribe'])) {
             if (is_email($email)) {
                 $sub = $wpdb->get_row( $wpdb->prepare( 'SELECT name FROM %i WHERE email=%s', self::table('subscribers'), $email ) );
@@ -1512,7 +1537,7 @@ class MAD_Event_Mailer {
     public static function shortcode_register($atts) {
         $events=self::get_events(true); ob_start();
         $show_unsub = !empty($_GET['mad_em_action']) && sanitize_text_field(wp_unslash($_GET['mad_em_action'])) === 'unsubscribe';
-        $current_subscription_language = self::normalize_subscription_language(sanitize_text_field(wp_unslash($_GET['mad_em_lang'] ?? 'zh')));
+        $current_subscription_language = self::request_subscription_language();
         $current_url = self::current_public_url();
         $query_result = null;
         if (!empty($_POST['mad_em_public_query']) && isset($_POST['mad_em_public_nonce']) && wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['mad_em_public_nonce'])), 'mad_em_public_register')) {
@@ -1551,11 +1576,10 @@ class MAD_Event_Mailer {
                 <div class="mad-em-actions"><button class="mad-em-submit" type="submit">保存订阅</button><span class="mad-em-note">你可以随时回到这个页面退订。</span></div>
             </form>
             <form class="mad-em-panel <?php echo ($show_unsub && !$show_query) ? 'active' : ''; ?>" data-panel="unsubscribe" method="post">
-                <input type="hidden" name="mad_em_public_unsubscribe" value="1"><input type="hidden" name="mad_em_redirect" value="<?php echo esc_url($current_url); ?>"><?php wp_nonce_field('mad_em_public_register', 'mad_em_public_nonce'); ?>
+                <input type="hidden" name="mad_em_public_unsubscribe" value="1"><input type="hidden" name="mad_em_redirect" value="<?php echo esc_url($current_url); ?>"><input type="hidden" name="subscription_language" value="<?php echo esc_attr($current_subscription_language); ?>"><?php wp_nonce_field('mad_em_public_register', 'mad_em_public_nonce'); ?>
                 <h2 class="mad-em-register-title">退订活动通知</h2>
                 <p class="mad-em-register-sub">请输入需要退订的邮箱。退订会一次性退订全部活动通知，不需要逐个类目取消。</p>
                 <div class="mad-em-field"><label>邮箱</label><input type="email" name="email" placeholder="name@example.com" required></div>
-                <div class="mad-em-field" style="margin-top:16px"><label>订阅语言 / Subscription Language</label><select name="subscription_language" style="width:100%;box-sizing:border-box;border:1px solid #dbe3ef;border-radius:15px;background:#fff;padding:14px 15px;font-size:15px"><option value="zh" <?php selected($current_subscription_language, 'zh'); ?>>中文</option><option value="en" <?php selected($current_subscription_language, 'en'); ?>>English</option></select></div>
                 <div class="mad-em-actions"><button class="mad-em-submit danger" type="submit">确认退订</button><span class="mad-em-note">退订后，如需重新接收通知，可以再次使用左侧订阅表单。</span></div>
             </form>
             <form class="mad-em-panel <?php echo $show_query ? 'active' : ''; ?>" data-panel="query" method="post">
