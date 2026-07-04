@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAD Event Mailer
  * Description: An HTML email delivery plugin for event notifications. Supports SMTP, template variables, CSV recipients, event subscriptions, shortcode registration, batch sending, scheduled sending and language packs.
- * Version: 2.2.3
+ * Version: 2.2.4
  * Author: MAD Producer Studio
  * Author URI: https://github.com/MAD-Producer
  * License: GPL v2
@@ -14,7 +14,7 @@
 if (!defined('ABSPATH')) exit;
 
 class MAD_Event_Mailer {
-    const VERSION = '2.2.3';
+    const VERSION = '2.2.4';
     const OPT = 'mad_em_settings';
     const CRON = 'mad_em_process_campaigns';
 
@@ -28,6 +28,8 @@ class MAD_Event_Mailer {
         add_action('wp_ajax_mad_em_preview_send', [__CLASS__, 'ajax_preview_send']);
         add_action('wp_ajax_mad_em_test_send', [__CLASS__, 'ajax_test_send']);
         add_action('phpmailer_init', [__CLASS__, 'smtp_config']);
+        add_filter('wp_mail_from', [__CLASS__, 'mail_from']);
+        add_filter('wp_mail_from_name', [__CLASS__, 'mail_from_name']);
         add_shortcode('mad_email_register', [__CLASS__, 'shortcode_register']);
         add_action('init', [__CLASS__, 'handle_public_register']);
         add_action(self::CRON, [__CLASS__, 'process_campaigns']);
@@ -150,6 +152,46 @@ class MAD_Event_Mailer {
         'host'=>'', 'port'=>'465', 'secure'=>'ssl', 'username'=>'', 'password'=>'', 'from_email'=>'', 'from_name'=>'MAD Producer 麦德工坊', 'sender_name'=>'MAD Producer 麦德工坊', 'reply_to'=>'', 'batch_size'=>30, 'register_page_url'=>'', 'register_page_url_zh'=>'', 'register_page_url_en'=>'', 'default_unsubscribe_button'=>1, 'default_unsubscribe_lang'=>'zh', 'ui_language'=>'auto', 'public_language'=>'auto'
     ]); }
 
+    private static function looks_like_no_reply($name) {
+        $normalized = strtolower(preg_replace('/[\s._-]+/', '', (string)$name));
+        return in_array($normalized, ['noreply','donotreply'], true);
+    }
+
+    private static function sender_name() {
+        $raw = get_option(self::OPT, []);
+        $s = self::settings();
+        $candidates = [];
+        if (is_array($raw)) {
+            $candidates[] = $raw['sender_name'] ?? '';
+            $candidates[] = $raw['from_name'] ?? '';
+        }
+        $candidates[] = $s['sender_name'] ?? '';
+        $candidates[] = $s['from_name'] ?? '';
+        foreach ($candidates as $candidate) {
+            $name = trim((string)$candidate);
+            if ($name !== '' && !self::looks_like_no_reply($name)) return $name;
+        }
+        return 'MAD Producer 麦德工坊';
+    }
+
+    private static function sender_email() {
+        $s = self::settings();
+        foreach ([$s['from_email'] ?? '', $s['username'] ?? ''] as $candidate) {
+            $email = sanitize_email($candidate);
+            if (is_email($email)) return $email;
+        }
+        return '';
+    }
+
+    public static function mail_from($email) {
+        $sender_email = self::sender_email();
+        return $sender_email ?: $email;
+    }
+
+    public static function mail_from_name($name) {
+        return self::sender_name();
+    }
+
     private static function current_ui_language() {
         $s = self::settings();
         $lang = $s['ui_language'] ?? 'auto';
@@ -248,6 +290,15 @@ class MAD_Event_Mailer {
 
     public static function smtp_config($phpmailer) {
         $s = self::settings();
+        $from_email = self::sender_email();
+        $display_name = self::sender_name();
+        if ($from_email) {
+            $phpmailer->setFrom($from_email, $display_name, false);
+            $phpmailer->FromName = $display_name;
+            $phpmailer->Sender = $from_email;
+        } else {
+            $phpmailer->FromName = $display_name;
+        }
         if (empty($s['host']) || empty($s['username'])) return;
         $phpmailer->isSMTP();
         $phpmailer->Host = $s['host'];
@@ -256,10 +307,6 @@ class MAD_Event_Mailer {
         $phpmailer->Username = $s['username'];
         $phpmailer->Password = $s['password'];
         $phpmailer->SMTPSecure = $s['secure'];
-        $stored_sender = !empty($s['sender_name']) ? $s['sender_name'] : ($s['from_name'] ?? '');
-        $display_name = ($stored_sender && $stored_sender !== 'No-reply') ? $stored_sender : 'MAD Producer 麦德工坊';
-        if (!empty($s['from_email'])) $phpmailer->setFrom($s['from_email'], $display_name, false);
-        if (!empty($s['from_email'])) $phpmailer->FromName = $display_name;
         if (!empty($s['reply_to'])) $phpmailer->addReplyTo($s['reply_to']);
     }
 
@@ -511,7 +558,7 @@ class MAD_Event_Mailer {
 
         if ($action === 'save_settings') {
             $sender_name = sanitize_text_field(wp_unslash($_POST['sender_name'] ?? ($_POST['from_name'] ?? 'MAD Producer 麦德工坊')));
-            if ($sender_name === '') $sender_name = 'MAD Producer 麦德工坊';
+            if ($sender_name === '' || self::looks_like_no_reply($sender_name)) $sender_name = 'MAD Producer 麦德工坊';
             update_option(self::OPT, [
                 'host'=>sanitize_text_field(wp_unslash($_POST['host'] ?? '')), 'port'=>sanitize_text_field(wp_unslash($_POST['port'] ?? '465')),
                 'secure'=>sanitize_text_field(wp_unslash($_POST['secure'] ?? 'ssl')), 'username'=>sanitize_text_field(wp_unslash($_POST['username'] ?? '')),
@@ -883,25 +930,59 @@ class MAD_Event_Mailer {
         return $id;
     }
 
+    private static function default_subscription_template_html($language) {
+        global $wpdb;
+        $language = self::normalize_subscription_language($language);
+        $table = self::table('templates');
+        $preferred_id = $language === 'en' ? 2 : 1;
+        $html = $wpdb->get_var( $wpdb->prepare( 'SELECT html FROM %i WHERE id=%d LIMIT 1', $table, $preferred_id ) );
+        if ($html) return (string)$html;
+        if ($language === 'en') {
+            $html = $wpdb->get_var( $wpdb->prepare( 'SELECT html FROM %i WHERE name IN (%s,%s) ORDER BY id ASC LIMIT 1', $table, '默认英文模板', 'Default English Template' ) );
+        } else {
+            $html = $wpdb->get_var( $wpdb->prepare( 'SELECT html FROM %i WHERE name=%s ORDER BY id ASC LIMIT 1', $table, '默认中文模板' ) );
+        }
+        if ($html) return (string)$html;
+        $file = plugin_dir_path(__FILE__) . ($language === 'en' ? 'default-template-en.html' : 'default-template-zh.html');
+        $html = self::read_local_file($file);
+        return $html ?: '{{message1}}';
+    }
+
     private static function send_subscription_notice($email, $name, $language, $type='subscribe') {
         if (!is_email($email)) return false;
         $language = self::normalize_subscription_language($language);
         $display_name = $name ?: $email;
+        $safe_display_name = esc_html($display_name);
         if ($type === 'unsubscribe') {
             if ($language === 'en') {
                 $subject = 'Subscription cancelled';
-                $body = '<p>Hello '.esc_html($display_name).',</p><p>Your event notification subscription has been cancelled.</p><p>Subscription language: English.</p>';
+                $message = '<p>Your event notification subscription has been cancelled.</p><p>Subscription language: English.</p>';
             } else {
                 $subject = '订阅已退订';
-                $body = '<p>你好，'.esc_html($display_name).'：</p><p>你的活动通知订阅已经退订。</p><p>订阅语言：中文。</p>';
+                $message = '<p>你的活动通知订阅已经退订。</p><p>订阅语言：中文。</p>';
             }
         } elseif ($language === 'en') {
             $subject = 'Subscription confirmed';
-            $body = '<p>Hello '.esc_html($display_name).',</p><p>Welcome to MAD Producer event notifications. Your subscription has been saved successfully.</p><p>Subscription language: English.</p>';
+            $message = '<p>Welcome to MAD Producer event notifications. Your subscription has been saved successfully.</p><p>Subscription language: English.</p>';
         } else {
             $subject = '订阅已确认';
-            $body = '<p>你好，'.esc_html($display_name).'：</p><p>欢迎使用 MAD Producer 活动通知。你的订阅已经保存成功。</p><p>订阅语言：中文。</p>';
+            $message = '<p>欢迎使用 MAD Producer 活动通知。你的订阅已经保存成功。</p><p>订阅语言：中文。</p>';
         }
+        $template_html = self::default_subscription_template_html($language);
+        $vars = [
+            'email' => $email,
+            'name' => $safe_display_name,
+            'name1' => $safe_display_name,
+            'title' => $subject,
+            'title1' => $subject,
+            'message' => $message,
+            'message1' => $message,
+            'unsubscribe_url' => self::get_unsubscribe_url($language),
+        ];
+        foreach (self::extract_vars($template_html) as $v) {
+            if (!array_key_exists($v, $vars)) $vars[$v] = '';
+        }
+        $body = self::render_template($template_html, $vars);
         return wp_mail($email, $subject, $body, ['Content-Type: text/html; charset=UTF-8']);
     }
 
@@ -1125,7 +1206,7 @@ class MAD_Event_Mailer {
         <tr><th>邮箱账号</th><td><input class="regular-text" name="username" value="<?php echo esc_attr($s['username']); ?>"></td></tr>
         <tr><th>邮箱密码</th><td><input class="regular-text" type="password" name="password" value="<?php echo esc_attr($s['password']); ?>"></td></tr>
         <tr><th>发件邮箱</th><td><input class="regular-text" name="from_email" value="<?php echo esc_attr($s['from_email']); ?>"></td></tr>
-        <tr><th>发件人姓名</th><td><input class="regular-text" name="sender_name" value="<?php $sender_display = !empty($s['sender_name']) ? $s['sender_name'] : ($s['from_name'] ?? ''); echo esc_attr(($sender_display && $sender_display !== 'No-reply') ? $sender_display : 'MAD Producer 麦德工坊'); ?>"><p class="description">邮件里显示的发件人名称，例如：MAD Producer 麦德工坊。保存后会同步用于 SMTP 发信 From Name。</p></td></tr>
+        <tr><th>发件人姓名</th><td><input class="regular-text" name="sender_name" value="<?php echo esc_attr(self::sender_name()); ?>"><p class="description">邮件里显示的发件人名称，例如：MAD Producer 麦德工坊。保存后会同步用于 SMTP 发信 From Name。</p></td></tr>
         <tr><th>回复地址</th><td><input class="regular-text" name="reply_to" value="<?php echo esc_attr($s['reply_to']); ?>"></td></tr>
         <tr><th>每批发送数量</th><td><input type="number" name="batch_size" value="<?php echo esc_attr($s['batch_size']); ?>"> 封 / 每次定时任务</td></tr>
         <tr><th>订阅 / 退订页面固定链接</th><td><input class="regular-text" name="register_page_url" value="<?php echo esc_attr($s['register_page_url']); ?>" placeholder="https://example.com/mail-subscribe/"><p class="description">通用固定链接，未设置语言专属链接时作为备用。</p></td></tr>

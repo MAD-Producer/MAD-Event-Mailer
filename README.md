@@ -12,7 +12,7 @@ The plugin was created for event operation scenarios such as submission notices,
 - **Author:** [MAD Producer Studio](https://github.com/MAD-Producer)
 - **License:** GPL v2
 - **Text domain:** `mad-event-mailer`
-- **Current version:** 2.2.3
+- **Current version:** 2.2.4
 - **Shortcode:** `[mad_email_register]`
 
 ## Main Features
@@ -303,6 +303,11 @@ Table names may vary depending on the WordPress database prefix.
 - For better deliverability, configure SPF, DKIM, and DMARC for the sender domain.
 
 ## Release Notes
+
+### 2.2.4
+
+- Fixed outgoing email sender name so SMTP sender settings are applied consistently.
+- Subscription and unsubscribe confirmation emails now use the common HTML email template.
 
 ### 2.2.2
 

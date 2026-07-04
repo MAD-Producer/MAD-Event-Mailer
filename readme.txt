@@ -4,7 +4,7 @@ Tags: email, smtp, newsletter, event, html email, csv
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.2.3
+Stable tag: 2.2.4
 License: GPL v2
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -35,6 +35,10 @@ Yes. The plugin includes a default English template and an English interface lan
 Yes. Use variables such as `{{score}}`, `{{rank}}`, and `{{comment}}`, then include matching CSV columns.
 
 == Changelog ==
+
+= 2.2.4 =
+* Fixed outgoing email sender name so SMTP sender settings are applied consistently.
+* Subscription and unsubscribe confirmation emails now use the common HTML email template.
 
 = 2.2.3 =
 * Added bilingual subscription language selection on the public shortcode form.
