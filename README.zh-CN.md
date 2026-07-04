@@ -284,6 +284,22 @@ jane@example.com,Jane,IFT IC #6,88,5,Good structure
 - 建议为发件域名配置 SPF、DKIM、DMARC，提高送达率。
 - 插件用于活动通知和社群通知，不应用于垃圾邮件或未经许可的营销邮件。
 
+## Release 说明
+
+### 2.2.2
+
+本次 release 延续 2.2.1 的 GitHub 发布元信息更新，并新增以下更新说明：
+
+- 完善英文语言包，补充后台、发送任务、模板、收件人、预览和 JavaScript 状态提示中仍显示中文的文案。
+- 后台界面语言和前台订阅页语言默认改为跟随 WordPress 站点语言。
+
+### 2.2.1
+
+- 更新用于 GitHub release 的插件元信息。
+- 增加 GPL v2 许可证头。
+- 作者信息更新为 MAD Producer Studio，并增加 GitHub 作者链接。
+- 增加英文 README 和中文 README。
+
 ## 许可证
 
 本项目使用 **GPL v2** 许可证。

@@ -302,6 +302,22 @@ Table names may vary depending on the WordPress database prefix.
 - The plugin is intended for event and community notification use cases, not for spam or unsolicited marketing.
 - For better deliverability, configure SPF, DKIM, and DMARC for the sender domain.
 
+## Release Notes
+
+### 2.2.2
+
+This release continues the 2.2.1 GitHub release metadata updates and adds the following changes:
+
+- Improved English translations across admin, campaign, template, subscriber, preview, and JavaScript status text.
+- Changed the default admin interface and public subscription page language settings to follow the WordPress site language.
+
+### 2.2.1
+
+- Updated plugin metadata for GitHub release.
+- Added GPL v2 license header.
+- Updated author to MAD Producer Studio with GitHub author URL.
+- Added English README and Chinese README.
+
 ## License
 
 This project is licensed under **GPL v2**.
