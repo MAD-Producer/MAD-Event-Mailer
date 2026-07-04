@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAD Event Mailer
  * Description: An HTML email delivery plugin for event notifications. Supports SMTP, template variables, CSV recipients, event subscriptions, shortcode registration, batch sending, scheduled sending and language packs.
- * Version: 2.2.2
+ * Version: 2.2.3
  * Author: MAD Producer Studio
  * Author URI: https://github.com/MAD-Producer
  * License: GPL v2
@@ -14,7 +14,7 @@
 if (!defined('ABSPATH')) exit;
 
 class MAD_Event_Mailer {
-    const VERSION = '2.2.2';
+    const VERSION = '2.2.3';
     const OPT = 'mad_em_settings';
     const CRON = 'mad_em_process_campaigns';
 
@@ -66,6 +66,7 @@ class MAD_Event_Mailer {
             slug VARCHAR(190) NOT NULL,
             description TEXT NULL,
             active TINYINT(1) NOT NULL DEFAULT 1,
+            sort_order INT NOT NULL DEFAULT 0,
             created_at DATETIME NOT NULL,
             PRIMARY KEY (id),
             UNIQUE KEY slug (slug)
@@ -86,7 +87,8 @@ class MAD_Event_Mailer {
         dbDelta("CREATE TABLE {$prefix}subscriber_events (
             subscriber_id BIGINT UNSIGNED NOT NULL,
             event_id BIGINT UNSIGNED NOT NULL,
-            PRIMARY KEY (subscriber_id,event_id)
+            language VARCHAR(10) NOT NULL DEFAULT 'zh',
+            PRIMARY KEY (subscriber_id,event_id,language)
         ) $charset;");
 
         dbDelta("CREATE TABLE {$prefix}campaigns (
@@ -128,6 +130,7 @@ class MAD_Event_Mailer {
             PRIMARY KEY (campaign_id,subscriber_id)
         ) $charset;");
 
+        self::ensure_223_schema();
         self::seed_defaults();
         // 退订按钮现在由发送任务选项动态追加，不再直接写入模板。
         if (!wp_next_scheduled(self::CRON)) wp_schedule_event(time() + 60, 'mad_em_five_minutes', self::CRON);
@@ -144,19 +147,19 @@ class MAD_Event_Mailer {
     private static function table($name) { global $wpdb; return $wpdb->prefix . 'mad_em_' . $name; }
     private static function now() { return current_time('mysql'); }
     private static function settings() { return wp_parse_args(get_option(self::OPT, []), [
-        'host'=>'', 'port'=>'465', 'secure'=>'ssl', 'username'=>'', 'password'=>'', 'from_email'=>'', 'from_name'=>'No-reply', 'sender_name'=>'', 'reply_to'=>'', 'batch_size'=>30, 'register_page_url'=>'', 'default_unsubscribe_button'=>1, 'default_unsubscribe_lang'=>'zh', 'ui_language'=>'zh_CN', 'public_language'=>'zh_CN'
+        'host'=>'', 'port'=>'465', 'secure'=>'ssl', 'username'=>'', 'password'=>'', 'from_email'=>'', 'from_name'=>'MAD Producer 麦德工坊', 'sender_name'=>'MAD Producer 麦德工坊', 'reply_to'=>'', 'batch_size'=>30, 'register_page_url'=>'', 'register_page_url_zh'=>'', 'register_page_url_en'=>'', 'default_unsubscribe_button'=>1, 'default_unsubscribe_lang'=>'zh', 'ui_language'=>'auto', 'public_language'=>'auto'
     ]); }
 
     private static function current_ui_language() {
         $s = self::settings();
-        $lang = $s['ui_language'] ?? 'zh_CN';
+        $lang = $s['ui_language'] ?? 'auto';
         if ($lang === 'auto') $lang = get_locale();
         return $lang;
     }
 
     private static function current_public_language() {
         $s = self::settings();
-        $lang = $s['public_language'] ?? 'zh_CN';
+        $lang = $s['public_language'] ?? 'auto';
         if ($lang === 'auto') $lang = get_locale();
         return $lang;
     }
@@ -194,6 +197,22 @@ class MAD_Event_Mailer {
         return self::translate_text($text, $lang);
     }
 
+
+    private static function ensure_223_schema() {
+        global $wpdb;
+        $events = self::table('events');
+        $subscriber_events = self::table('subscriber_events');
+        $event_columns = $wpdb->get_col( $wpdb->prepare( 'SHOW COLUMNS FROM %i', $events ), 0 );
+        if (is_array($event_columns) && !in_array('sort_order', $event_columns, true)) {
+            $wpdb->query( $wpdb->prepare( 'ALTER TABLE %i ADD sort_order INT NOT NULL DEFAULT 0 AFTER active', $events ) );
+            $wpdb->query( $wpdb->prepare( 'UPDATE %i SET sort_order=id*10 WHERE sort_order=0', $events ) );
+        }
+        $subscriber_event_columns = $wpdb->get_col( $wpdb->prepare( 'SHOW COLUMNS FROM %i', $subscriber_events ), 0 );
+        if (is_array($subscriber_event_columns) && !in_array('language', $subscriber_event_columns, true)) {
+            $wpdb->query( $wpdb->prepare( 'ALTER TABLE %i ADD language VARCHAR(10) NOT NULL DEFAULT %s AFTER event_id', $subscriber_events, 'zh' ) );
+        }
+        $wpdb->query( $wpdb->prepare( 'ALTER TABLE %i DROP PRIMARY KEY, ADD PRIMARY KEY (subscriber_id,event_id,language)', $subscriber_events ) );
+    }
 
     private static function seed_defaults() {
         global $wpdb;
@@ -237,7 +256,8 @@ class MAD_Event_Mailer {
         $phpmailer->Username = $s['username'];
         $phpmailer->Password = $s['password'];
         $phpmailer->SMTPSecure = $s['secure'];
-        $display_name = !empty($s['sender_name']) ? $s['sender_name'] : ($s['from_name'] ?: 'No-reply');
+        $stored_sender = !empty($s['sender_name']) ? $s['sender_name'] : ($s['from_name'] ?? '');
+        $display_name = ($stored_sender && $stored_sender !== 'No-reply') ? $stored_sender : 'MAD Producer 麦德工坊';
         if (!empty($s['from_email'])) $phpmailer->setFrom($s['from_email'], $display_name, false);
         if (!empty($s['from_email'])) $phpmailer->FromName = $display_name;
         if (!empty($s['reply_to'])) $phpmailer->addReplyTo($s['reply_to']);
@@ -298,6 +318,7 @@ class MAD_Event_Mailer {
         }
         $allowed['a'] = isset($allowed['a']) ? array_merge($allowed['a'], $extra_attrs, ['href'=>true,'target'=>true,'rel'=>true,'title'=>true]) : array_merge($extra_attrs, ['href'=>true,'target'=>true,'rel'=>true,'title'=>true]);
         $allowed['img'] = isset($allowed['img']) ? array_merge($allowed['img'], $extra_attrs, ['src'=>true,'alt'=>true,'title'=>true]) : array_merge($extra_attrs, ['src'=>true,'alt'=>true,'title'=>true]);
+        $allowed['style'] = ['type' => true, 'media' => true];
         return $allowed;
     }
 
@@ -488,7 +509,8 @@ class MAD_Event_Mailer {
         global $wpdb;
 
         if ($action === 'save_settings') {
-            $sender_name = sanitize_text_field(wp_unslash($_POST['sender_name'] ?? ($_POST['from_name'] ?? 'No-reply')));
+            $sender_name = sanitize_text_field(wp_unslash($_POST['sender_name'] ?? ($_POST['from_name'] ?? 'MAD Producer 麦德工坊')));
+            if ($sender_name === '') $sender_name = 'MAD Producer 麦德工坊';
             update_option(self::OPT, [
                 'host'=>sanitize_text_field(wp_unslash($_POST['host'] ?? '')), 'port'=>sanitize_text_field(wp_unslash($_POST['port'] ?? '465')),
                 'secure'=>sanitize_text_field(wp_unslash($_POST['secure'] ?? 'ssl')), 'username'=>sanitize_text_field(wp_unslash($_POST['username'] ?? '')),
@@ -496,10 +518,12 @@ class MAD_Event_Mailer {
                 'from_name'=>$sender_name, 'sender_name'=>$sender_name, 'reply_to'=>sanitize_email(wp_unslash($_POST['reply_to'] ?? '')),
                 'batch_size'=>max(1, (int) sanitize_text_field(wp_unslash($_POST['batch_size'] ?? 30))),
                 'register_page_url'=>esc_url_raw(wp_unslash($_POST['register_page_url'] ?? '')),
+                'register_page_url_zh'=>esc_url_raw(wp_unslash($_POST['register_page_url_zh'] ?? '')),
+                'register_page_url_en'=>esc_url_raw(wp_unslash($_POST['register_page_url_en'] ?? '')),
                 'default_unsubscribe_button'=>!empty($_POST['default_unsubscribe_button']) ? 1 : 0,
                 'default_unsubscribe_lang'=>in_array(sanitize_text_field(wp_unslash($_POST['default_unsubscribe_lang'] ?? 'zh')), ['zh','en'], true) ? sanitize_text_field(wp_unslash($_POST['default_unsubscribe_lang'])) : 'zh',
-                'ui_language'=>in_array(sanitize_text_field(wp_unslash($_POST['ui_language'] ?? 'zh_CN')), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['ui_language'])) : 'zh_CN',
-                'public_language'=>in_array(sanitize_text_field(wp_unslash($_POST['public_language'] ?? 'zh_CN')), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['public_language'])) : 'zh_CN'
+                'ui_language'=>in_array(sanitize_text_field(wp_unslash($_POST['ui_language'] ?? 'auto')), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['ui_language'])) : 'auto',
+                'public_language'=>in_array(sanitize_text_field(wp_unslash($_POST['public_language'] ?? 'auto')), ['zh_CN','en_US','auto'], true) ? sanitize_text_field(wp_unslash($_POST['public_language'])) : 'auto'
             ]);
             add_action('admin_notices', fn()=>self::notice('设置已保存。发件人姓名已更新为：'.$sender_name));
         }
@@ -559,7 +583,12 @@ class MAD_Event_Mailer {
             $slug = sanitize_title(wp_unslash($_POST['slug'] ?? $name));
             $data = ['name'=>$name, 'slug'=>$slug, 'description'=>sanitize_textarea_field(wp_unslash($_POST['description'] ?? '')), 'active'=>!empty($_POST['active']) ? 1 : 0];
             if ($id) $wpdb->update(self::table('events'), $data, ['id'=>$id]);
-            else { $data['created_at']=self::now(); $wpdb->insert(self::table('events'), $data); }
+            else {
+                $max_order = (int)$wpdb->get_var( $wpdb->prepare( 'SELECT COALESCE(MAX(sort_order),0) FROM %i', self::table('events') ) );
+                $data['sort_order']=$max_order + 10;
+                $data['created_at']=self::now();
+                $wpdb->insert(self::table('events'), $data);
+            }
             add_action('admin_notices', fn()=>self::notice('活动已保存。'));
         }
 
@@ -568,6 +597,14 @@ class MAD_Event_Mailer {
             $wpdb->delete(self::table('subscriber_events'), ['event_id'=>$id]);
             $wpdb->delete(self::table('events'), ['id'=>$id]);
             add_action('admin_notices', fn()=>self::notice('活动已删除。'));
+        }
+
+        if ($action === 'save_event_order') {
+            $order = isset($_POST['event_order']) && is_array($_POST['event_order']) ? array_map('absint', wp_unslash($_POST['event_order'])) : [];
+            foreach (array_values(array_filter($order)) as $index => $event_id) {
+                $wpdb->update(self::table('events'), ['sort_order'=>($index + 1) * 10], ['id'=>$event_id]);
+            }
+            add_action('admin_notices', fn()=>self::notice('活动排序已保存。'));
         }
 
         if ($action === 'save_subscriber') {
@@ -656,6 +693,7 @@ class MAD_Event_Mailer {
         $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'zh'));
         $unsub_lang = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'zh';
         $html = self::ensure_unsubscribe_notice($html, $unsub_lang, $include_unsub);
+        while (ob_get_level()) { ob_end_clean(); }
         header('Content-Type: text/html; charset=UTF-8');
         echo self::safe_email_html($html);
         exit;
@@ -677,13 +715,22 @@ class MAD_Event_Mailer {
         return $html;
     }
 
-    private static function get_register_page_url() {
+    private static function normalize_subscription_language($lang) {
+        $lang = strtolower((string)$lang);
+        return in_array($lang, ['zh','en'], true) ? $lang : 'zh';
+    }
+
+    private static function get_register_page_url($lang = '') {
         $s = self::settings();
+        $lang = self::normalize_subscription_language($lang ?: 'zh');
+        $key = $lang === 'en' ? 'register_page_url_en' : 'register_page_url_zh';
+        if (!empty($s[$key])) return $s[$key];
         return !empty($s['register_page_url']) ? $s['register_page_url'] : home_url('/');
     }
 
-    private static function get_unsubscribe_url() {
-        return add_query_arg('mad_em_action', 'unsubscribe', self::get_register_page_url());
+    private static function get_unsubscribe_url($lang = '') {
+        $lang = self::normalize_subscription_language($lang ?: 'zh');
+        return add_query_arg(['mad_em_action'=>'unsubscribe', 'mad_em_lang'=>$lang], self::get_register_page_url($lang));
     }
 
     private static function is_builtin_template($id) {
@@ -720,25 +767,48 @@ class MAD_Event_Mailer {
     private static function get_events($active_only=false) {
         global $wpdb;
         if ($active_only) {
-            return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE active=%d ORDER BY id DESC', self::table('events'), 1 ) );
+            return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE active=%d ORDER BY sort_order ASC, id DESC', self::table('events'), 1 ) );
         }
-        return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC', self::table('events') ) );
+        return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY sort_order ASC, id DESC', self::table('events') ) );
     }
     private static function get_templates() {
         global $wpdb;
         return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC', self::table('templates') ) );
     }
 
-    private static function upsert_subscriber($email, $name, $event_ids, $source='manual', $merge_events=false) {
+    private static function upsert_subscriber($email, $name, $event_ids, $source='manual', $merge_events=false, $language='zh') {
         global $wpdb;
         if (!is_email($email)) return 0;
+        $language = self::normalize_subscription_language($language);
         $table = self::table('subscribers');
         $id = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM %i WHERE email=%s', $table, $email ) );
         $data = ['email'=>$email, 'name'=>$name, 'status'=>'subscribed', 'source'=>$source, 'updated_at'=>self::now()];
         if ($id) $wpdb->update($table, $data, ['id'=>$id]); else { $data['created_at']=self::now(); $wpdb->insert($table, $data); $id = (int)$wpdb->insert_id; }
         if (!$merge_events) $wpdb->delete(self::table('subscriber_events'), ['subscriber_id'=>$id]);
-        foreach ($event_ids as $eid) if ($eid) $wpdb->replace(self::table('subscriber_events'), ['subscriber_id'=>$id, 'event_id'=>(int)$eid], ['%d','%d']);
+        foreach ($event_ids as $eid) if ($eid) $wpdb->replace(self::table('subscriber_events'), ['subscriber_id'=>$id, 'event_id'=>(int)$eid, 'language'=>$language], ['%d','%d','%s']);
         return $id;
+    }
+
+    private static function send_subscription_notice($email, $name, $language, $type='subscribe') {
+        if (!is_email($email)) return false;
+        $language = self::normalize_subscription_language($language);
+        $display_name = $name ?: $email;
+        if ($type === 'unsubscribe') {
+            if ($language === 'en') {
+                $subject = 'Subscription cancelled';
+                $body = '<p>Hello '.esc_html($display_name).',</p><p>Your event notification subscription has been cancelled.</p><p>Subscription language: English.</p>';
+            } else {
+                $subject = '订阅已退订';
+                $body = '<p>你好，'.esc_html($display_name).'：</p><p>你的活动通知订阅已经退订。</p><p>订阅语言：中文。</p>';
+            }
+        } elseif ($language === 'en') {
+            $subject = 'Subscription confirmed';
+            $body = '<p>Hello '.esc_html($display_name).',</p><p>Welcome to MAD Producer event notifications. Your subscription has been saved successfully.</p><p>Subscription language: English.</p>';
+        } else {
+            $subject = '订阅已确认';
+            $body = '<p>你好，'.esc_html($display_name).'：</p><p>欢迎使用 MAD Producer 活动通知。你的订阅已经保存成功。</p><p>订阅语言：中文。</p>';
+        }
+        return wp_mail($email, $subject, $body, ['Content-Type: text/html; charset=UTF-8']);
     }
 
     private static function import_csv($path) {
@@ -873,12 +943,12 @@ class MAD_Event_Mailer {
                 $vars['email'] = $sub->email ?? $log->email;
                 $vars['name'] = $sub->name ?? '';
                 $vars['name1'] = $sub->name ?? '';
-                $vars['unsubscribe_url'] = self::get_unsubscribe_url();
                 $vars['title'] = $vars['title'] ?? $c->subject;
                 $vars['title1'] = $vars['title1'] ?? $c->subject;
                 $subject = self::render_template($c->subject, $vars);
                 $include_unsub = !empty($vars['__include_unsubscribe']);
                 $unsub_lang = in_array(($vars['__unsubscribe_lang'] ?? 'zh'), ['zh','en'], true) ? $vars['__unsubscribe_lang'] : 'zh';
+                $vars['unsubscribe_url'] = self::get_unsubscribe_url($unsub_lang);
                 $body = self::render_template(self::ensure_unsubscribe_notice($template->html, $unsub_lang, $include_unsub), $vars);
                 $ok = wp_mail($log->email, $subject, $body, ['Content-Type: text/html; charset=UTF-8']);
                 $wpdb->update($log_table, ['status'=>$ok?'sent':'failed', 'error'=>$ok?'':'wp_mail failed', 'sent_at'=>self::now()], ['id'=>$log->id]);
@@ -899,14 +969,16 @@ class MAD_Event_Mailer {
         <tr><th>邮箱账号</th><td><input class="regular-text" name="username" value="<?php echo esc_attr($s['username']); ?>"></td></tr>
         <tr><th>邮箱密码</th><td><input class="regular-text" type="password" name="password" value="<?php echo esc_attr($s['password']); ?>"></td></tr>
         <tr><th>发件邮箱</th><td><input class="regular-text" name="from_email" value="<?php echo esc_attr($s['from_email']); ?>"></td></tr>
-        <tr><th>发件人姓名</th><td><input class="regular-text" name="sender_name" value="<?php echo esc_attr(!empty($s['sender_name']) ? $s['sender_name'] : $s['from_name']); ?>"><p class="description">邮件里显示的发件人名称，例如：MAD Producer 麦德工坊。保存后会同步用于 SMTP 发信 From Name。</p></td></tr>
+        <tr><th>发件人姓名</th><td><input class="regular-text" name="sender_name" value="<?php $sender_display = !empty($s['sender_name']) ? $s['sender_name'] : ($s['from_name'] ?? ''); echo esc_attr(($sender_display && $sender_display !== 'No-reply') ? $sender_display : 'MAD Producer 麦德工坊'); ?>"><p class="description">邮件里显示的发件人名称，例如：MAD Producer 麦德工坊。保存后会同步用于 SMTP 发信 From Name。</p></td></tr>
         <tr><th>回复地址</th><td><input class="regular-text" name="reply_to" value="<?php echo esc_attr($s['reply_to']); ?>"></td></tr>
         <tr><th>每批发送数量</th><td><input type="number" name="batch_size" value="<?php echo esc_attr($s['batch_size']); ?>"> 封 / 每次定时任务</td></tr>
-        <tr><th>订阅 / 退订页面固定链接</th><td><input class="regular-text" name="register_page_url" value="<?php echo esc_attr($s['register_page_url']); ?>" placeholder="https://example.com/mail-subscribe/"><p class="description">请新建一个页面，放入短代码 <code>[mad_email_register]</code>，然后把该页面链接填在这里。邮件底部的退订链接会跳转到这个页面。</p></td></tr>
+        <tr><th>订阅 / 退订页面固定链接</th><td><input class="regular-text" name="register_page_url" value="<?php echo esc_attr($s['register_page_url']); ?>" placeholder="https://example.com/mail-subscribe/"><p class="description">通用固定链接，未设置语言专属链接时作为备用。</p></td></tr>
+        <tr><th>中文订阅 / 退订固定链接</th><td><input class="regular-text" name="register_page_url_zh" value="<?php echo esc_attr($s['register_page_url_zh']); ?>" placeholder="https://example.com/mail-subscribe/"><p class="description">中文订阅确认、退订入口和邮件底部中文退订链接优先使用这个地址。</p></td></tr>
+        <tr><th>英文订阅 / 退订固定链接</th><td><input class="regular-text" name="register_page_url_en" value="<?php echo esc_attr($s['register_page_url_en']); ?>" placeholder="https://example.com/en/mail-subscribe/"><p class="description">English subscription confirmation, unsubscribe entry, and English footer links use this URL first.</p></td></tr>
         <tr><th>默认退订按钮</th><td><label><input type="checkbox" name="default_unsubscribe_button" value="1" <?php checked(!empty($s['default_unsubscribe_button'])); ?>> 新建发送任务时默认在邮件底部添加“订阅管理 / 退订”按钮</label><p class="description">这个按钮由插件自动追加，不需要写在 HTML 模板或正文里。</p></td></tr>
         <tr><th>默认退订按钮语言</th><td><select name="default_unsubscribe_lang"><option value="zh" <?php selected($s['default_unsubscribe_lang'] ?? 'zh','zh'); ?>>中文</option><option value="en" <?php selected($s['default_unsubscribe_lang'] ?? 'zh','en'); ?>>English</option></select></td></tr>
-        <tr><th>后台界面语言</th><td><select name="ui_language"><option value="zh_CN" <?php selected($s['ui_language'] ?? 'zh_CN','zh_CN'); ?>>中文</option><option value="en_US" <?php selected($s['ui_language'] ?? 'zh_CN','en_US'); ?>>English</option><option value="auto" <?php selected($s['ui_language'] ?? 'zh_CN','auto'); ?>>跟随 WordPress 站点语言</option></select><p class="description">切换后保存并刷新 MAD 邮件后台页面即可生效。</p></td></tr>
-        <tr><th>前台订阅页语言</th><td><select name="public_language"><option value="zh_CN" <?php selected($s['public_language'] ?? 'zh_CN','zh_CN'); ?>>中文</option><option value="en_US" <?php selected($s['public_language'] ?? 'zh_CN','en_US'); ?>>English</option><option value="auto" <?php selected($s['public_language'] ?? 'zh_CN','auto'); ?>>跟随 WordPress 站点语言</option></select><p class="description">影响短代码 <code>[mad_email_register]</code> 生成的订阅、查询和退订表单。</p></td></tr></table>
+        <tr><th>后台界面语言</th><td><select name="ui_language"><option value="zh_CN" <?php selected($s['ui_language'] ?? 'auto','zh_CN'); ?>>中文</option><option value="en_US" <?php selected($s['ui_language'] ?? 'auto','en_US'); ?>>English</option><option value="auto" <?php selected($s['ui_language'] ?? 'auto','auto'); ?>>跟随 WordPress 站点语言</option></select><p class="description">切换后保存并刷新 MAD 邮件后台页面即可生效。</p></td></tr>
+        <tr><th>前台订阅页语言</th><td><select name="public_language"><option value="zh_CN" <?php selected($s['public_language'] ?? 'auto','zh_CN'); ?>>中文</option><option value="en_US" <?php selected($s['public_language'] ?? 'auto','en_US'); ?>>English</option><option value="auto" <?php selected($s['public_language'] ?? 'auto','auto'); ?>>跟随 WordPress 站点语言</option></select><p class="description">影响短代码 <code>[mad_email_register]</code> 生成的订阅、查询和退订表单。</p></td></tr></table>
         <?php submit_button('保存设置'); ?></form><?php self::wrap_end();
     }
 
@@ -959,9 +1031,14 @@ class MAD_Event_Mailer {
         <tr><th>别名 / Slug</th><td><input class="regular-text" name="slug" value="<?php echo esc_attr($edit->slug ?? ''); ?>"></td></tr>
         <tr><th>活动描述</th><td><textarea class="large-text" name="description" rows="3"><?php echo esc_textarea($edit->description ?? ''); ?></textarea></td></tr>
         <tr><th>启用</th><td><label><input type="checkbox" name="active" <?php checked(($edit->active ?? 1), 1); ?>> 在前台注册表单中显示</label></td></tr></table><?php submit_button('保存活动'); ?></form>
-        <table class="widefat striped"><thead><tr><th>ID</th><th>活动名称</th><th>别名 / Slug</th><th>启用</th><th>操作</th></tr></thead><tbody><?php foreach (self::get_events(false) as $e): ?>
-        <tr><td><?php echo (int)$e->id; ?></td><td><?php echo esc_html($e->name); ?></td><td><?php echo esc_html($e->slug); ?></td><td><?php echo $e->active ? '是' : '否'; ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=mad-em-events&edit='.$e->id)); ?>">编辑</a> <form method="post" style="display:inline"><?php self::nonce('delete_event'); ?><input type="hidden" name="id" value="<?php echo (int)$e->id; ?>"><button class="button-link-delete" onclick="return confirm('确定删除这个活动吗？')">删除</button></form></td></tr>
-        <?php endforeach; ?></tbody></table><?php self::wrap_end();
+        <form method="post" id="mad-em-event-order-form"><?php self::nonce('save_event_order'); ?>
+        <table class="widefat striped"><thead><tr><th style="width:70px">排序</th><th>ID</th><th>活动名称</th><th>别名 / Slug</th><th>中文收件人</th><th>英文收件人</th><th>启用</th><th>操作</th></tr></thead><tbody id="mad-em-event-order"><?php foreach (self::get_events(false) as $e): $zh_count=(int)$wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM %i WHERE event_id=%d AND language=%s', self::table('subscriber_events'), $e->id, 'zh')); $en_count=(int)$wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM %i WHERE event_id=%d AND language=%s', self::table('subscriber_events'), $e->id, 'en')); ?>
+        <tr draggable="true"><td class="mad-em-drag-handle" style="cursor:move">↕ 拖拽<input type="hidden" name="event_order[]" value="<?php echo (int)$e->id; ?>"></td><td><?php echo (int)$e->id; ?></td><td><?php echo esc_html($e->name); ?></td><td><?php echo esc_html($e->slug); ?></td><td><?php echo $zh_count; ?></td><td><?php echo $en_count; ?></td><td><?php echo $e->active ? '是' : '否'; ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=mad-em-events&edit='.$e->id)); ?>">编辑</a> <button class="button-link-delete" type="submit" form="mad-em-delete-event-<?php echo (int)$e->id; ?>" onclick="return confirm('确定删除这个活动吗？')">删除</button></td></tr>
+        <?php endforeach; ?></tbody></table>
+        <?php submit_button('保存活动排序', 'secondary'); ?></form>
+        <?php foreach (self::get_events(false) as $e): ?><form method="post" id="mad-em-delete-event-<?php echo (int)$e->id; ?>" style="display:none"><?php self::nonce('delete_event'); ?><input type="hidden" name="id" value="<?php echo (int)$e->id; ?>"></form><?php endforeach; ?>
+        <script>(function(){const tbody=document.getElementById('mad-em-event-order');if(!tbody)return;let dragging=null;tbody.querySelectorAll('tr').forEach(row=>{row.addEventListener('dragstart',function(){dragging=row;row.style.opacity='.55';});row.addEventListener('dragend',function(){row.style.opacity='';dragging=null;});row.addEventListener('dragover',function(e){e.preventDefault();if(!dragging||dragging===row)return;const rect=row.getBoundingClientRect();const after=(e.clientY-rect.top)>rect.height/2;tbody.insertBefore(dragging,after?row.nextSibling:row);});});})();</script>
+        <?php self::wrap_end();
     }
 
     public static function page_subscribers() {
@@ -1166,19 +1243,25 @@ class MAD_Event_Mailer {
         if (!isset($_POST['mad_em_public_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['mad_em_public_nonce'])), 'mad_em_public_register')) return;
         global $wpdb;
         $email = sanitize_email(wp_unslash($_POST['email'] ?? ''));
+        $name = sanitize_text_field(wp_unslash($_POST['name'] ?? ''));
+        $language = self::normalize_subscription_language(sanitize_text_field(wp_unslash($_POST['subscription_language'] ?? ($_GET['mad_em_lang'] ?? 'zh'))));
         if (!empty($_POST['mad_em_public_unsubscribe'])) {
             if (is_email($email)) {
+                $sub = $wpdb->get_row( $wpdb->prepare( 'SELECT name FROM %i WHERE email=%s', self::table('subscribers'), $email ) );
                 $wpdb->update(self::table('subscribers'), ['status'=>'unsubscribed','updated_at'=>self::now()], ['email'=>$email]);
+                self::send_subscription_notice($email, $sub->name ?? '', $language, 'unsubscribe');
             }
-            wp_safe_redirect(add_query_arg('mad_em_unsubscribed', '1', wp_get_referer() ?: self::get_register_page_url())); exit;
+            wp_safe_redirect(add_query_arg('mad_em_unsubscribed', '1', wp_get_referer() ?: self::get_register_page_url($language))); exit;
         }
-        self::upsert_subscriber($email, sanitize_text_field(wp_unslash($_POST['name'] ?? '')), array_map('absint', wp_unslash($_POST['events'] ?? [])), 'shortcode', true);
-        wp_safe_redirect(add_query_arg('mad_em_registered', '1', wp_get_referer() ?: self::get_register_page_url())); exit;
+        self::upsert_subscriber($email, $name, array_map('absint', wp_unslash($_POST['events'] ?? [])), 'shortcode', true, $language);
+        self::send_subscription_notice($email, $name, $language, 'subscribe');
+        wp_safe_redirect(add_query_arg('mad_em_registered', '1', wp_get_referer() ?: self::get_register_page_url($language))); exit;
     }
 
     public static function shortcode_register($atts) {
         $events=self::get_events(true); ob_start();
         $show_unsub = !empty($_GET['mad_em_action']) && sanitize_text_field(wp_unslash($_GET['mad_em_action'])) === 'unsubscribe';
+        $current_subscription_language = self::normalize_subscription_language(sanitize_text_field(wp_unslash($_GET['mad_em_lang'] ?? 'zh')));
         $query_result = null;
         if (!empty($_POST['mad_em_public_query']) && isset($_POST['mad_em_public_nonce']) && wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['mad_em_public_nonce'])), 'mad_em_public_register')) {
             global $wpdb;
@@ -1194,7 +1277,7 @@ class MAD_Event_Mailer {
         $show_query = !empty($query_result);
         ?>
         <style>
-        .mad-em-register-wrap{max-width:860px;margin:36px auto;padding:0 16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}.mad-em-register-card{position:relative;overflow:hidden;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid rgba(15,23,42,.08);border-radius:28px;box-shadow:0 22px 70px rgba(15,23,42,.12);padding:36px}.mad-em-register-card:before{content:"";position:absolute;inset:0 0 auto 0;height:6px;background:linear-gradient(90deg,#2563eb,#60a5fa,#22c55e)}.mad-em-register-title{font-size:30px;font-weight:800;letter-spacing:-.03em;color:#0f172a;margin:0 0 8px}.mad-em-register-sub{color:#64748b;font-size:15px;line-height:1.8;margin:0 0 26px}.mad-em-tabs{display:flex;gap:10px;background:#eef4ff;border-radius:16px;padding:6px;margin-bottom:24px}.mad-em-tab{flex:1;text-align:center;border:0;border-radius:12px;padding:12px 14px;font-weight:750;cursor:pointer;color:#475569;background:transparent}.mad-em-tab.active{background:#fff;color:#1d4ed8;box-shadow:0 8px 24px rgba(37,99,235,.12)}.mad-em-panel{display:none}.mad-em-panel.active{display:block}.mad-em-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.mad-em-field label{display:block;font-size:14px;font-weight:700;color:#334155;margin-bottom:8px}.mad-em-field input[type=text],.mad-em-field input[type=email]{width:100%;box-sizing:border-box;border:1px solid #dbe3ef;border-radius:15px;background:#fff;padding:14px 15px;font-size:15px;outline:none;transition:.2s}.mad-em-field input:focus{border-color:#3b82f6;box-shadow:0 0 0 4px rgba(59,130,246,.13)}.mad-em-events{margin-top:22px}.mad-em-events-title{font-size:15px;font-weight:800;color:#0f172a;margin-bottom:12px}.mad-em-event-list{display:grid;grid-template-columns:1fr 1fr;gap:12px}.mad-em-event-item{display:flex;gap:10px;align-items:flex-start;border:1px solid #e2e8f0;background:#fff;border-radius:16px;padding:14px;cursor:pointer;transition:.2s}.mad-em-event-item:hover{border-color:#93c5fd;box-shadow:0 8px 24px rgba(37,99,235,.08);transform:translateY(-1px)}.mad-em-event-item input{margin-top:3px;accent-color:#2563eb}.mad-em-event-name{font-weight:700;color:#1e293b}.mad-em-actions{margin-top:26px;display:flex;gap:12px;align-items:center}.mad-em-submit{border:0;border-radius:16px;padding:14px 22px;font-size:16px;font-weight:800;color:#fff;background:linear-gradient(135deg,#2563eb,#1d4ed8);cursor:pointer;box-shadow:0 12px 24px rgba(37,99,235,.24);transition:.2s}.mad-em-submit:hover{transform:translateY(-1px);box-shadow:0 16px 30px rgba(37,99,235,.30)}.mad-em-submit.danger{background:linear-gradient(135deg,#ef4444,#dc2626);box-shadow:0 12px 24px rgba(239,68,68,.20)}.mad-em-note{font-size:13px;color:#64748b;line-height:1.7}.mad-em-success{max-width:860px;margin:20px auto;padding:14px 16px;border:1px solid #bbf7d0;background:#f0fdf4;color:#166534;border-radius:14px;font-weight:700}.mad-em-warning{max-width:860px;margin:20px auto;padding:14px 16px;border:1px solid #fecaca;background:#fef2f2;color:#991b1b;border-radius:14px;font-weight:700}@media(max-width:680px){.mad-em-grid,.mad-em-event-list{grid-template-columns:1fr}.mad-em-register-card{padding:26px}.mad-em-register-title{font-size:25px}.mad-em-tabs{flex-direction:column}.mad-em-actions{flex-direction:column;align-items:stretch}.mad-em-submit{width:100%}}
+        .mad-em-register-wrap{max-width:860px;margin:36px auto;padding:0 16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}.mad-em-register-card{position:relative;overflow:hidden;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid rgba(15,23,42,.08);border-radius:28px;box-shadow:0 22px 70px rgba(15,23,42,.12);padding:36px}.mad-em-register-card:before{content:"";position:absolute;inset:0 0 auto 0;height:6px;background:linear-gradient(90deg,#2563eb,#60a5fa,#22c55e)}.mad-em-register-title{font-size:30px;font-weight:800;letter-spacing:-.03em;color:#0f172a;margin:0 0 8px}.mad-em-register-sub{color:#64748b;font-size:15px;line-height:1.8;margin:0 0 26px}.mad-em-tabs{display:flex;gap:10px;background:#eef4ff;border-radius:16px;padding:6px;margin-bottom:24px}.mad-em-tab{flex:1;text-align:center;border:0;border-radius:12px;padding:12px 14px;font-weight:750;cursor:pointer;color:#475569;background:transparent}.mad-em-tab.active{background:#fff;color:#1d4ed8;box-shadow:0 8px 24px rgba(37,99,235,.12)}.mad-em-panel{display:none}.mad-em-panel.active{display:block}.mad-em-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.mad-em-field label{display:block;font-size:14px;font-weight:700;color:#334155;margin-bottom:8px}.mad-em-field input[type=text],.mad-em-field input[type=email]{width:100%;box-sizing:border-box;border:1px solid #dbe3ef;border-radius:15px;background:#fff;padding:14px 15px;font-size:15px;outline:none;transition:.2s}.mad-em-field input:focus{border-color:#3b82f6;box-shadow:0 0 0 4px rgba(59,130,246,.13)}.mad-em-events{margin-top:22px}.mad-em-events-title{font-size:15px;font-weight:800;color:#0f172a;margin-bottom:12px}.mad-em-event-list{display:grid;grid-template-columns:1fr 1fr;gap:12px}.mad-em-event-item{position:relative;display:flex;gap:10px;align-items:center;border:1px solid #e2e8f0;background:#fff;border-radius:16px;padding:15px 18px;cursor:pointer;transition:.2s}.mad-em-event-item:hover{border-color:#93c5fd;box-shadow:0 8px 24px rgba(37,99,235,.08);transform:translateY(-1px)}.mad-em-event-item input{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}.mad-em-event-item>span{position:relative;display:flex;align-items:center;width:100%;padding-right:30px}.mad-em-event-item>span:after{content:"";position:absolute;right:0;width:20px;height:20px;border-radius:999px;border:2px solid #cbd5e1;background:#fff;box-sizing:border-box;transition:.2s}.mad-em-event-item.is-selected{border-color:#2563eb;background:linear-gradient(135deg,#eff6ff,#fff);box-shadow:0 12px 30px rgba(37,99,235,.14)}.mad-em-event-item.is-selected>span:after{border-color:#2563eb;background:#2563eb;box-shadow:inset 0 0 0 4px #fff}.mad-em-event-name{font-weight:700;color:#1e293b}.mad-em-actions{margin-top:26px;display:flex;gap:12px;align-items:center}.mad-em-submit{border:0;border-radius:16px;padding:14px 22px;font-size:16px;font-weight:800;color:#fff;background:linear-gradient(135deg,#2563eb,#1d4ed8);cursor:pointer;box-shadow:0 12px 24px rgba(37,99,235,.24);transition:.2s}.mad-em-submit:hover{transform:translateY(-1px);box-shadow:0 16px 30px rgba(37,99,235,.30)}.mad-em-submit.danger{background:linear-gradient(135deg,#ef4444,#dc2626);box-shadow:0 12px 24px rgba(239,68,68,.20)}.mad-em-note{font-size:13px;color:#64748b;line-height:1.7}.mad-em-success{max-width:860px;margin:20px auto;padding:14px 16px;border:1px solid #bbf7d0;background:#f0fdf4;color:#166534;border-radius:14px;font-weight:700}.mad-em-warning{max-width:860px;margin:20px auto;padding:14px 16px;border:1px solid #fecaca;background:#fef2f2;color:#991b1b;border-radius:14px;font-weight:700}@media(max-width:680px){.mad-em-grid,.mad-em-event-list{grid-template-columns:1fr}.mad-em-register-card{padding:26px}.mad-em-register-title{font-size:25px}.mad-em-tabs{flex-direction:column}.mad-em-actions{flex-direction:column;align-items:stretch}.mad-em-submit{width:100%}}
         </style>
         <?php if (!empty($_GET['mad_em_registered'])) echo '<div class="mad-em-success">订阅已保存。后续相关活动通知会发送到你的邮箱。</div>'; ?>
         <?php if (!empty($_GET['mad_em_unsubscribed'])) echo '<div class="mad-em-warning">退订已提交。这个邮箱将不再接收活动通知。</div>'; ?>
@@ -1209,6 +1292,7 @@ class MAD_Event_Mailer {
                 <h2 class="mad-em-register-title">订阅活动通知</h2>
                 <p class="mad-em-register-sub">填写邮箱并选择你想接收通知的活动。重复提交只会增加新的订阅类目，不会删除你以前已经订阅的类目。</p>
                 <div class="mad-em-grid"><div class="mad-em-field"><label>姓名</label><input type="text" name="name" placeholder="请输入你的姓名" required></div><div class="mad-em-field"><label>邮箱</label><input type="email" name="email" placeholder="name@example.com" required></div></div>
+                <div class="mad-em-field" style="margin-top:16px"><label>订阅语言 / Subscription Language</label><select name="subscription_language" style="width:100%;box-sizing:border-box;border:1px solid #dbe3ef;border-radius:15px;background:#fff;padding:14px 15px;font-size:15px"><option value="zh" <?php selected($current_subscription_language, 'zh'); ?>>中文</option><option value="en" <?php selected($current_subscription_language, 'en'); ?>>English</option></select></div>
                 <div class="mad-em-events"><div class="mad-em-events-title">选择想接收通知的活动</div><div class="mad-em-event-list">
                 <?php foreach($events as $e): ?><label class="mad-em-event-item"><input type="checkbox" name="events[]" value="<?php echo (int)$e->id; ?>"><span><span class="mad-em-event-name"><?php echo esc_html($e->name); ?></span></span></label><?php endforeach; ?>
                 </div></div>
@@ -1219,6 +1303,7 @@ class MAD_Event_Mailer {
                 <h2 class="mad-em-register-title">退订活动通知</h2>
                 <p class="mad-em-register-sub">请输入需要退订的邮箱。退订会一次性退订全部活动通知，不需要逐个类目取消。</p>
                 <div class="mad-em-field"><label>邮箱</label><input type="email" name="email" placeholder="name@example.com" required></div>
+                <div class="mad-em-field" style="margin-top:16px"><label>订阅语言 / Subscription Language</label><select name="subscription_language" style="width:100%;box-sizing:border-box;border:1px solid #dbe3ef;border-radius:15px;background:#fff;padding:14px 15px;font-size:15px"><option value="zh" <?php selected($current_subscription_language, 'zh'); ?>>中文</option><option value="en" <?php selected($current_subscription_language, 'en'); ?>>English</option></select></div>
                 <div class="mad-em-actions"><button class="mad-em-submit danger" type="submit">确认退订</button><span class="mad-em-note">退订后，如需重新接收通知，可以再次使用左侧订阅表单。</span></div>
             </form>
             <form class="mad-em-panel <?php echo $show_query ? 'active' : ''; ?>" data-panel="query" method="post">
@@ -1241,7 +1326,7 @@ class MAD_Event_Mailer {
                 <?php endif; ?>
             </form>
         </div></div>
-        <script>(function(){document.querySelectorAll('.mad-em-tab').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.mad-em-tab').forEach(b=>b.classList.remove('active'));document.querySelectorAll('.mad-em-panel').forEach(p=>p.classList.remove('active'));btn.classList.add('active');const panel=document.querySelector('.mad-em-panel[data-panel="'+btn.dataset.target+'"]');if(panel)panel.classList.add('active');}));})();</script>
+        <script>(function(){document.querySelectorAll('.mad-em-tab').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.mad-em-tab').forEach(b=>b.classList.remove('active'));document.querySelectorAll('.mad-em-panel').forEach(p=>p.classList.remove('active'));btn.classList.add('active');const panel=document.querySelector('.mad-em-panel[data-panel="'+btn.dataset.target+'"]');if(panel)panel.classList.add('active');}));function syncEventItem(input){const item=input.closest('.mad-em-event-item');if(item)item.classList.toggle('is-selected',input.checked);}document.querySelectorAll('.mad-em-event-item input[type="checkbox"]').forEach(input=>{syncEventItem(input);input.addEventListener('change',()=>syncEventItem(input));});})();</script>
         <?php $html = ob_get_clean();
         if (self::is_english_language(self::current_public_language())) $html = self::translate_text($html, self::current_public_language());
         return $html;
