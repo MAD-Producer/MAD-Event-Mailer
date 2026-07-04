@@ -27,6 +27,7 @@ return [
     '后台界面语言' => 'Admin Interface Language',
     '前台订阅页语言' => 'Public Subscription Page Language',
     '中文' => 'Chinese',
+    '英文' => 'English',
     '跟随 WordPress 站点语言' => 'Follow WordPress Site Language',
     '保存设置' => 'Save Settings',
     '设置已保存。' => 'Settings saved.',
