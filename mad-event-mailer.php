@@ -742,6 +742,57 @@ class MAD_Event_Mailer {
         return trim((string)$event->name) . ' ' . self::language_label($lang);
     }
 
+    private static function recipient_list_key($value) {
+        return strtolower(trim((string)$value));
+    }
+
+    private static function recipient_list_map($events) {
+        $map = [];
+        foreach ($events as $e) {
+            $name = trim((string)$e->name);
+            $slug = trim((string)$e->slug);
+            foreach (['zh','en'] as $lang) {
+                $list = ['event_id'=>(int)$e->id, 'language'=>$lang];
+                $suffixes = $lang === 'en' ? ['英文','English','english','en'] : ['中文','Chinese','chinese','zh'];
+                foreach (array_filter([$name, $slug]) as $base) {
+                    foreach ($suffixes as $suffix) {
+                        $map[self::recipient_list_key($base . ' ' . $suffix)] = $list;
+                        $map[self::recipient_list_key($base . '-' . $suffix)] = $list;
+                    }
+                }
+                $map[self::recipient_list_key(self::event_language_value($e->id, $lang))] = $list;
+            }
+        }
+        return $map;
+    }
+
+    private static function parse_recipient_list_tokens($event_text, $event_map) {
+        $lists = [];
+        foreach (preg_split('/[,;，、]+/', (string)$event_text) as $token) {
+            $token = trim((string)$token);
+            if ($token === '') continue;
+            $key = self::recipient_list_key($token);
+            if (isset($event_map[$key])) {
+                $lists[] = $event_map[$key];
+                continue;
+            }
+            [$event_id, $language] = self::parse_event_language_value($token);
+            if ($event_id) $lists[] = ['event_id'=>$event_id, 'language'=>$language];
+        }
+        $unique = [];
+        foreach ($lists as $list) {
+            $key = (int)$list['event_id'] . '|' . self::normalize_subscription_language($list['language']);
+            $unique[$key] = ['event_id'=>(int)$list['event_id'], 'language'=>self::normalize_subscription_language($list['language'])];
+        }
+        return array_values($unique);
+    }
+
+    private static function default_recipient_list_from_post($field = 'default_event') {
+        if (empty($_POST[$field])) return [];
+        [$event_id, $language] = self::parse_event_language_value(wp_unslash($_POST[$field]));
+        return $event_id ? [['event_id'=>$event_id, 'language'=>$language]] : [];
+    }
+
     private static function get_register_page_url($lang = '') {
         $s = self::settings();
         $lang = self::normalize_subscription_language($lang ?: 'zh');
@@ -753,6 +804,17 @@ class MAD_Event_Mailer {
     private static function get_unsubscribe_url($lang = '') {
         $lang = self::normalize_subscription_language($lang ?: 'zh');
         return add_query_arg(['mad_em_action'=>'unsubscribe', 'mad_em_lang'=>$lang], self::get_register_page_url($lang));
+    }
+
+    private static function current_public_url() {
+        $request_uri = isset($_SERVER['REQUEST_URI']) ? wp_unslash($_SERVER['REQUEST_URI']) : '/';
+        return home_url($request_uri);
+    }
+
+    private static function public_form_redirect_url($language) {
+        $fallback = self::get_register_page_url($language);
+        $posted = esc_url_raw(wp_unslash($_POST['mad_em_redirect'] ?? ''));
+        return $posted ? wp_validate_redirect($posted, $fallback) : $fallback;
     }
 
     private static function is_builtin_template($id) {
@@ -799,15 +861,25 @@ class MAD_Event_Mailer {
     }
 
     private static function upsert_subscriber($email, $name, $event_ids, $source='manual', $merge_events=false, $language='zh') {
+        $language = self::normalize_subscription_language($language);
+        $event_lists = [];
+        foreach ($event_ids as $eid) if ($eid) $event_lists[] = ['event_id'=>(int)$eid, 'language'=>$language];
+        return self::upsert_subscriber_event_lists($email, $name, $event_lists, $source, $merge_events);
+    }
+
+    private static function upsert_subscriber_event_lists($email, $name, $event_lists, $source='manual', $merge_events=false) {
         global $wpdb;
         if (!is_email($email)) return 0;
-        $language = self::normalize_subscription_language($language);
         $table = self::table('subscribers');
         $id = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM %i WHERE email=%s', $table, $email ) );
         $data = ['email'=>$email, 'name'=>$name, 'status'=>'subscribed', 'source'=>$source, 'updated_at'=>self::now()];
         if ($id) $wpdb->update($table, $data, ['id'=>$id]); else { $data['created_at']=self::now(); $wpdb->insert($table, $data); $id = (int)$wpdb->insert_id; }
         if (!$merge_events) $wpdb->delete(self::table('subscriber_events'), ['subscriber_id'=>$id]);
-        foreach ($event_ids as $eid) if ($eid) $wpdb->replace(self::table('subscriber_events'), ['subscriber_id'=>$id, 'event_id'=>(int)$eid, 'language'=>$language], ['%d','%d','%s']);
+        foreach ($event_lists as $list) {
+            $event_id = absint($list['event_id'] ?? 0);
+            $language = self::normalize_subscription_language($list['language'] ?? 'zh');
+            if ($event_id) $wpdb->replace(self::table('subscriber_events'), ['subscriber_id'=>$id, 'event_id'=>$event_id, 'language'=>$language], ['%d','%d','%s']);
+        }
         return $id;
     }
 
@@ -906,20 +978,16 @@ class MAD_Event_Mailer {
         $header = array_shift($rows);
         if (!$header) return 0;
         $header = array_map(fn($h)=>strtolower(trim((string) $h)), $header);
-        $count = 0; $events = self::get_events(false); $event_map = [];
-        foreach ($events as $e) { $event_map[strtolower($e->slug)] = $e->id; $event_map[strtolower($e->name)] = $e->id; }
+        $count = 0; $event_map = self::recipient_list_map(self::get_events(false));
         foreach ($rows as $row) {
             $data = array_combine($header, array_pad($row, count($header), ''));
             if (!is_array($data)) continue;
             $email = sanitize_email($data['email'] ?? $data['邮箱'] ?? '');
             $name = sanitize_text_field($data['name'] ?? $data['姓名'] ?? '');
-            $event_ids = [];
             $event_text = $data['events'] ?? $data['event'] ?? $data['活动'] ?? '';
-            foreach (preg_split('/[,;|，、]+/', $event_text) as $token) {
-                $key = strtolower(trim($token)); if (isset($event_map[$key])) $event_ids[] = $event_map[$key];
-            }
-            if (empty($event_ids) && !empty($_POST['default_event'])) $event_ids[] = absint(wp_unslash($_POST['default_event']));
-            if (self::upsert_subscriber($email, $name, $event_ids, 'csv')) $count++;
+            $event_lists = self::parse_recipient_list_tokens($event_text, $event_map);
+            if (empty($event_lists)) $event_lists = self::default_recipient_list_from_post();
+            if (self::upsert_subscriber_event_lists($email, $name, $event_lists, 'csv')) $count++;
         }
         return $count;
     }
@@ -989,8 +1057,7 @@ class MAD_Event_Mailer {
         if (!$header) return 0;
         if (isset($header[0])) $header[0] = preg_replace('/^\xEF\xBB\xBF/', '', $header[0]);
         $header = array_map(fn($h)=>strtolower(trim((string) $h)), $header);
-        $events = self::get_events(false); $event_map = [];
-        foreach ($events as $e) { $event_map[strtolower($e->slug)] = $e->id; $event_map[strtolower($e->name)] = $e->id; }
+        $event_map = self::recipient_list_map(self::get_events(false));
         $count = 0; $editable = self::editable_vars($template_vars);
         foreach ($rows as $row) {
             $data = array_combine($header, array_pad($row, count($header), ''));
@@ -998,12 +1065,9 @@ class MAD_Event_Mailer {
             $email = sanitize_email($data['email'] ?? $data['邮箱'] ?? '');
             $name = sanitize_text_field($data['name'] ?? $data['姓名'] ?? '');
             if (!is_email($email)) continue;
-            $event_ids = [];
             $event_text = $data['events'] ?? $data['event'] ?? $data['活动'] ?? '';
-            foreach (preg_split('/[,;|，、]+/', $event_text) as $token) {
-                $key = strtolower(trim($token)); if (isset($event_map[$key])) $event_ids[] = $event_map[$key];
-            }
-            $sid = self::upsert_subscriber($email, $name, $event_ids, 'csv-campaign', true);
+            $event_lists = self::parse_recipient_list_tokens($event_text, $event_map);
+            $sid = self::upsert_subscriber_event_lists($email, $name, $event_lists, 'csv-campaign', true);
             if (!$sid) continue;
             $wpdb->insert(self::table('campaign_logs'), ['campaign_id'=>$campaign_id, 'subscriber_id'=>$sid, 'email'=>$email, 'status'=>'pending']);
             $per_vars = [];
@@ -1143,8 +1207,8 @@ class MAD_Event_Mailer {
         $rows = self::get_filtered_subscribers($filter_value, 200);
         $total = count($rows);
         self::wrap_start('收件人'); ?>
-        <p>支持的 CSV 列名：<code>email,name,events</code>，也兼容 <code>邮箱,姓名,活动</code>。活动可以填写活动名称或 slug，多个活动用逗号分隔。</p>
-        <form method="post" enctype="multipart/form-data"><?php self::nonce('import_csv'); ?><input type="file" name="csv_file" accept=".csv" required> 默认活动： <select name="default_event"><option value="0">不指定</option><?php foreach($events as $e) echo '<option value="'.(int)$e->id.'">'.esc_html($e->name).'</option>'; ?></select> <?php submit_button('导入 CSV', 'secondary', 'submit', false); ?></form>
+        <p>支持的 CSV 列名：<code>email,name,events</code>，也兼容 <code>邮箱,姓名,活动</code>。活动需填写后台收件人列表名称，例如 <code>站点公告 中文</code> 或 <code>站点公告 英文</code>，多个列表用逗号分隔。</p>
+        <form method="post" enctype="multipart/form-data"><?php self::nonce('import_csv'); ?><input type="file" name="csv_file" accept=".csv" required> 默认活动： <select name="default_event"><option value="0">不指定</option><?php foreach($events as $e) foreach(['zh','en'] as $list_lang) echo '<option value="'.esc_attr(self::event_language_value($e->id,$list_lang)).'">'.esc_html(self::event_language_label($e,$list_lang)).'</option>'; ?></select> <?php submit_button('导入 CSV', 'secondary', 'submit', false); ?></form>
         <h2><?php echo $edit ? '编辑收件人' : '添加收件人'; ?></h2>
         <form method="post"><?php self::nonce('save_subscriber'); ?><input type="hidden" name="id" value="<?php echo esc_attr($edit->id ?? 0); ?>">
             <p><input name="email" placeholder="email@example.com" required value="<?php echo esc_attr($edit->email ?? ''); ?>"> <input name="name" placeholder="姓名" value="<?php echo esc_attr($edit->name ?? ''); ?>"> <select name="status"><option value="subscribed" <?php selected($edit->status ?? 'subscribed','subscribed'); ?>>已订阅</option><option value="unsubscribed" <?php selected($edit->status ?? 'subscribed','unsubscribed'); ?>>已退订</option></select></p>
@@ -1357,17 +1421,18 @@ class MAD_Event_Mailer {
                 $wpdb->update(self::table('subscribers'), ['status'=>'unsubscribed','updated_at'=>self::now()], ['email'=>$email]);
                 self::send_subscription_notice($email, $sub->name ?? '', $language, 'unsubscribe');
             }
-            wp_safe_redirect(add_query_arg('mad_em_unsubscribed', '1', wp_get_referer() ?: self::get_register_page_url($language))); exit;
+            wp_safe_redirect(add_query_arg('mad_em_unsubscribed', '1', self::public_form_redirect_url($language))); exit;
         }
         self::upsert_subscriber($email, $name, array_map('absint', wp_unslash($_POST['events'] ?? [])), 'shortcode', true, $language);
         self::send_subscription_notice($email, $name, $language, 'subscribe');
-        wp_safe_redirect(add_query_arg('mad_em_registered', '1', wp_get_referer() ?: self::get_register_page_url($language))); exit;
+        wp_safe_redirect(add_query_arg('mad_em_registered', '1', self::public_form_redirect_url($language))); exit;
     }
 
     public static function shortcode_register($atts) {
         $events=self::get_events(true); ob_start();
         $show_unsub = !empty($_GET['mad_em_action']) && sanitize_text_field(wp_unslash($_GET['mad_em_action'])) === 'unsubscribe';
         $current_subscription_language = self::normalize_subscription_language(sanitize_text_field(wp_unslash($_GET['mad_em_lang'] ?? 'zh')));
+        $current_url = self::current_public_url();
         $query_result = null;
         if (!empty($_POST['mad_em_public_query']) && isset($_POST['mad_em_public_nonce']) && wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['mad_em_public_nonce'])), 'mad_em_public_register')) {
             global $wpdb;
@@ -1394,7 +1459,7 @@ class MAD_Event_Mailer {
                 <button type="button" class="mad-em-tab <?php echo $show_query ? 'active' : ''; ?>" data-target="query">查询订阅</button>
             </div>
             <form class="mad-em-panel <?php echo (!$show_unsub && !$show_query) ? 'active' : ''; ?>" data-panel="subscribe" method="post">
-                <input type="hidden" name="mad_em_public_register" value="1"><?php wp_nonce_field('mad_em_public_register', 'mad_em_public_nonce'); ?>
+                <input type="hidden" name="mad_em_public_register" value="1"><input type="hidden" name="mad_em_redirect" value="<?php echo esc_url($current_url); ?>"><?php wp_nonce_field('mad_em_public_register', 'mad_em_public_nonce'); ?>
                 <h2 class="mad-em-register-title">订阅活动通知</h2>
                 <p class="mad-em-register-sub">填写邮箱并选择你想接收通知的活动。重复提交只会增加新的订阅类目，不会删除你以前已经订阅的类目。</p>
                 <div class="mad-em-grid"><div class="mad-em-field"><label>姓名</label><input type="text" name="name" placeholder="请输入你的姓名" required></div><div class="mad-em-field"><label>邮箱</label><input type="email" name="email" placeholder="name@example.com" required></div></div>
@@ -1405,7 +1470,7 @@ class MAD_Event_Mailer {
                 <div class="mad-em-actions"><button class="mad-em-submit" type="submit">保存订阅</button><span class="mad-em-note">你可以随时回到这个页面退订。</span></div>
             </form>
             <form class="mad-em-panel <?php echo ($show_unsub && !$show_query) ? 'active' : ''; ?>" data-panel="unsubscribe" method="post">
-                <input type="hidden" name="mad_em_public_unsubscribe" value="1"><?php wp_nonce_field('mad_em_public_register', 'mad_em_public_nonce'); ?>
+                <input type="hidden" name="mad_em_public_unsubscribe" value="1"><input type="hidden" name="mad_em_redirect" value="<?php echo esc_url($current_url); ?>"><?php wp_nonce_field('mad_em_public_register', 'mad_em_public_nonce'); ?>
                 <h2 class="mad-em-register-title">退订活动通知</h2>
                 <p class="mad-em-register-sub">请输入需要退订的邮箱。退订会一次性退订全部活动通知，不需要逐个类目取消。</p>
                 <div class="mad-em-field"><label>邮箱</label><input type="email" name="email" placeholder="name@example.com" required></div>
