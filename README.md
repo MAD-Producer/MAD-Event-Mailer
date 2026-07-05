@@ -1,6 +1,8 @@
 # MAD Event Mailer
 
 [中文文档 / Chinese README](./README.zh-CN.md)
+<img width="1038" height="718" alt="Snipaste_2026-07-05_17-11-48" src="https://github.com/user-attachments/assets/c29ac4e3-7e4d-4483-b23e-dc0350f759e9" />
+
 
 MAD Event Mailer is a WordPress plugin built for event notification emails. It provides SMTP delivery, reusable HTML email templates, template variables, CSV recipient import/export, event-based subscription lists, shortcode-based public subscription forms, batch sending, scheduled sending, and basic bilingual interface support.
 
