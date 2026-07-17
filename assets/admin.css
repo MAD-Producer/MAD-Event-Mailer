@@ -1,0 +1,17 @@
+.mad-em-modal,.mad-em-preview-modal{display:none;position:fixed;z-index:100000;inset:0;background:rgba(0,0,0,.48);padding:36px;box-sizing:border-box}
+.mad-em-modal-box,.mad-em-preview-box{max-width:980px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,.28);padding:16px}
+.mad-em-modal-head,.mad-em-preview-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.mad-em-modal iframe{width:100%;height:720px;border:1px solid #dcdcde;border-radius:8px;background:#fff}
+.mad-em-template-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.mad-em-template-actions form{margin:0}
+.mad-em-template-actions a,.mad-em-template-actions button{margin:0!important;white-space:nowrap}
+.mad-em-drag-handle{cursor:move}
+.mad-em-card{background:#fff;border:1px solid #dcdcde;border-radius:10px;padding:18px 22px;max-width:1180px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.mad-em-help{color:#646970;margin-top:6px}
+.mad-em-varrow{margin:0 0 14px}
+.mad-em-varrow textarea{max-width:880px}
+.mad-em-preview-modal{background:rgba(0,0,0,.45);padding:40px}
+.mad-em-preview-box{max-width:920px;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.mad-em-preview-box iframe{width:100%;height:650px;border:1px solid #dcdcde;border-radius:8px;background:#fff}
+.mad-em-preview-actions{display:flex;gap:8px;align-items:center}
+.mad-em-var-label{display:inline-block;margin-bottom:6px}

@@ -1,5 +1,7 @@
 # MAD Event Mailer
 
+Administration access is limited to WordPress administrators and users assigned the **Mail Manager** (`邮箱管理员`) role.
+
 [中文文档 / Chinese README](./README.zh-CN.md)
 <img width="1038" height="718" alt="Snipaste_2026-07-05_17-11-48" src="https://github.com/user-attachments/assets/c29ac4e3-7e4d-4483-b23e-dc0350f759e9" />
 
@@ -14,7 +16,7 @@ The plugin was created for event operation scenarios such as submission notices,
 - **Author:** [MAD Producer Studio](https://github.com/MAD-Producer)
 - **License:** GPL v2
 - **Text domain:** `mad-event-mailer`
-- **Current version:** 2.2.4
+- **Current version:** 2.2.5
 - **Shortcode:** `[mad_email_register]`
 
 ## Main Features

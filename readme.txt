@@ -1,10 +1,10 @@
 === MAD Event Mailer ===
-Contributors: MAD Producer Studio
+Contributors: ruoqin
 Tags: email, smtp, newsletter, event, html email, csv
-Requires at least: 5.8
+Requires at least: 6.2
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.2.4
+Stable tag: 2.2.5
 License: GPL v2
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -35,6 +35,15 @@ Yes. The plugin includes a default English template and an English interface lan
 Yes. Use variables such as `{{score}}`, `{{rank}}`, and `{{comment}}`, then include matching CSV columns.
 
 == Changelog ==
+
+= 2.2.5 =
+* Added a dedicated Mail Manager role and capability; only Mail Managers and site administrators can see or use the plugin administration screens.
+* Added nonce and capability checks across privileged requests.
+* Moved frontend and administration CSS/JavaScript to properly enqueued assets.
+* Completed English translation coverage for admin menus, dynamic preview/test messages, subscriber guidance, and notices.
+* Declared WordPress 6.2 as the minimum supported version because safe SQL identifier placeholders require WordPress 6.2 or newer.
+* Sanitized redirect URL handling, paired output buffering in one render flow, and strengthened the plugin's global declaration prefix.
+* Fixed campaign filtering, CSV output annotations, package hygiene, and the WordPress.org contributor username.
 
 = 2.2.4 =
 * Fixed outgoing email sender name so SMTP sender settings are applied consistently.

@@ -2,7 +2,8 @@
 /**
  * Plugin Name: MAD Event Mailer
  * Description: An HTML email delivery plugin for event notifications. Supports SMTP, template variables, CSV recipients, event subscriptions, shortcode registration, batch sending, scheduled sending and language packs.
- * Version: 2.2.4
+ * Version: 2.2.5
+ * Requires at least: 6.2
  * Author: MAD Producer Studio
  * Author URI: https://github.com/MAD-Producer
  * License: GPL v2
@@ -13,14 +14,15 @@
 
 if (!defined('ABSPATH')) exit;
 
-class MAD_Event_Mailer {
-    const VERSION = '2.2.4';
+class MADEVMA_Event_Mailer {
+    const VERSION = '2.2.5';
     const OPT = 'mad_em_settings';
     const CRON = 'mad_em_process_campaigns';
+    const CAP = 'mad_em_manage_mailer';
+    const ROLE = 'mad_em_mail_manager';
 
     public static function init() {
         add_action('admin_menu', [__CLASS__, 'menu']);
-        add_action('admin_init', [__CLASS__, 'maybe_start_i18n_buffer'], 0);
         add_action('admin_init', [__CLASS__, 'maybe_handle_post']);
         add_action('admin_init', [__CLASS__, 'maybe_handle_get']);
         add_action('admin_post_mad_em_export_template_csv', [__CLASS__, 'export_template_csv']);
@@ -35,6 +37,8 @@ class MAD_Event_Mailer {
         add_action(self::CRON, [__CLASS__, 'process_campaigns']);
         add_filter('cron_schedules', [__CLASS__, 'cron_schedules']);
         add_action('init', [__CLASS__, 'maybe_upgrade'], 1);
+        add_action('admin_enqueue_scripts', [__CLASS__, 'enqueue_admin_assets']);
+        add_action('wp_enqueue_scripts', [__CLASS__, 'enqueue_public_assets']);
     }
 
     public static function maybe_upgrade() {
@@ -49,6 +53,8 @@ class MAD_Event_Mailer {
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
         $charset = $wpdb->get_charset_collate();
         $prefix = $wpdb->prefix . 'mad_em_';
+
+        self::ensure_roles();
 
         dbDelta("CREATE TABLE {$prefix}templates (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -141,6 +147,21 @@ class MAD_Event_Mailer {
 
     public static function deactivate() { wp_clear_scheduled_hook(self::CRON); }
 
+    private static function ensure_roles() {
+        add_role(self::ROLE, '邮箱管理员', [
+            'read' => true,
+            self::CAP => true,
+        ]);
+        $mail_manager = get_role(self::ROLE);
+        if ($mail_manager && !$mail_manager->has_cap(self::CAP)) $mail_manager->add_cap(self::CAP);
+        $administrator = get_role('administrator');
+        if ($administrator && !$administrator->has_cap(self::CAP)) $administrator->add_cap(self::CAP);
+    }
+
+    private static function can_manage() {
+        return current_user_can(self::CAP) || current_user_can('manage_options');
+    }
+
     public static function cron_schedules($schedules) {
         $schedules['mad_em_five_minutes'] = ['interval' => 300, 'display' => '每 5 分钟'];
         return $schedules;
@@ -231,15 +252,13 @@ class MAD_Event_Mailer {
         return file_exists($file) ? (array) include $file : [];
     }
 
-    public static function maybe_start_i18n_buffer() {
-        if (!is_admin()) return;
-        if (empty($_GET['page']) || strpos(sanitize_text_field(wp_unslash($_GET['page'])), 'mad-em') !== 0) return;
-        if (!self::is_english_language(self::current_ui_language())) return;
-        ob_start([__CLASS__, 'translate_admin_output']);
-    }
-
-    public static function translate_admin_output($html) {
-        return self::translate_text($html, self::current_ui_language());
+    private static function render_admin_page($renderer) {
+        if (!self::can_manage()) wp_die(esc_html(self::tr('权限不足。')));
+        ob_start();
+        call_user_func([__CLASS__, $renderer]);
+        $html = ob_get_clean();
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Page renderers escape dynamic values at their source; this preserves WordPress admin forms and editor markup.
+        echo self::translate_text($html, self::current_ui_language());
     }
 
     private static function translate_text($text, $lang = null) {
@@ -329,21 +348,66 @@ class MAD_Event_Mailer {
     }
 
     public static function menu() {
-        add_menu_page('MAD 活动邮件系统', 'MAD 邮件', 'manage_options', 'mad-em', [__CLASS__, 'page_send'], 'dashicons-email-alt2', 58);
-        add_submenu_page('mad-em', '发送 / 定时发送', '发送 / 定时发送', 'manage_options', 'mad-em', [__CLASS__, 'page_send']);
-        add_submenu_page('mad-em', '邮件模板', '邮件模板', 'manage_options', 'mad-em-templates', [__CLASS__, 'page_templates']);
-        add_submenu_page('mad-em', '活动管理', '活动管理', 'manage_options', 'mad-em-events', [__CLASS__, 'page_events']);
-        add_submenu_page('mad-em', '收件人', '收件人', 'manage_options', 'mad-em-subscribers', [__CLASS__, 'page_subscribers']);
-        add_submenu_page('mad-em', '发送任务', '发送任务', 'manage_options', 'mad-em-campaigns', [__CLASS__, 'page_campaigns']);
-        add_submenu_page('mad-em', 'SMTP 设置', 'SMTP 设置', 'manage_options', 'mad-em-settings', [__CLASS__, 'page_settings']);
+        if (!self::can_manage()) return;
+        add_menu_page(self::tr('MAD 活动邮件系统'), self::tr('MAD 邮件'), self::CAP, 'mad-em', [__CLASS__, 'page_send'], 'dashicons-email-alt2', 58);
+        add_submenu_page('mad-em', self::tr('发送 / 定时发送'), self::tr('发送 / 定时发送'), self::CAP, 'mad-em', [__CLASS__, 'page_send']);
+        add_submenu_page('mad-em', self::tr('邮件模板'), self::tr('邮件模板'), self::CAP, 'mad-em-templates', [__CLASS__, 'page_templates']);
+        add_submenu_page('mad-em', self::tr('活动管理'), self::tr('活动管理'), self::CAP, 'mad-em-events', [__CLASS__, 'page_events']);
+        add_submenu_page('mad-em', self::tr('收件人'), self::tr('收件人'), self::CAP, 'mad-em-subscribers', [__CLASS__, 'page_subscribers']);
+        add_submenu_page('mad-em', self::tr('发送任务'), self::tr('发送任务'), self::CAP, 'mad-em-campaigns', [__CLASS__, 'page_campaigns']);
+        add_submenu_page('mad-em', self::tr('SMTP 设置'), self::tr('SMTP 设置'), self::CAP, 'mad-em-settings', [__CLASS__, 'page_settings']);
     }
 
-    private static function notice($msg, $type='success') { echo '<div class="notice notice-'.esc_attr($type).' is-dismissible"><p>'.esc_html($msg).'</p></div>'; }
+    public static function enqueue_admin_assets() {
+        $page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : '';
+        if (strpos($page, 'mad-em') !== 0 || !self::can_manage()) return;
+        wp_enqueue_style('madevma-admin', plugin_dir_url(__FILE__) . 'assets/admin.css', [], self::VERSION);
+        wp_enqueue_script('madevma-admin', plugin_dir_url(__FILE__) . 'assets/admin.js', [], self::VERSION, true);
+        wp_localize_script('madevma-admin', 'madevmaMailer', [
+            'ajaxUrl' => admin_url('admin-ajax.php'),
+            'previewNonce' => wp_create_nonce('mad_em_preview_send'),
+            'templateVars' => self::admin_selected_template_vars(),
+            'confirmDelete' => self::tr('确定删除吗？'),
+            'varPlaceholder' => self::tr('这里填写全局默认值；如果 CSV 中有同名列，会优先使用每个收件人自己的值。'),
+            'previewTitle' => self::tr('发送前预览'),
+            'previewStatus' => self::tr('静态预览：变量会保留为 {{变量名}}，不会发送邮件。'),
+            'testTitle' => self::tr('发送测试邮件'),
+            'testHelp' => self::tr('填写测试邮箱和变量示例值。只有点击下面的“发送测试邮件”才会真正发送。'),
+            'testPlaceholder' => self::tr('测试示例值；不填则保留 {{变量名}}'),
+            'emailRequired' => self::tr('请填写测试邮箱。'),
+            'sending' => self::tr('正在发送测试邮件...'),
+            'sent' => self::tr('测试邮件已发送。'),
+            'failed' => self::tr('测试邮件发送失败。'),
+            'failedPermission' => self::tr('测试邮件发送失败，请检查 SMTP 设置或后台权限。'),
+        ]);
+    }
+
+    private static function admin_selected_template_vars() {
+        if (empty($_GET['template_id'])) return [];
+        global $wpdb;
+        $template_id = absint(wp_unslash($_GET['template_id']));
+        $template = $wpdb->get_row($wpdb->prepare('SELECT subject, html FROM %i WHERE id=%d', self::table('templates'), $template_id));
+        return $template ? self::extract_vars($template->html . ' ' . $template->subject) : [];
+    }
+
+    public static function enqueue_public_assets() {
+        if (!is_singular()) return;
+        $post = get_post();
+        if (!$post || !has_shortcode((string) $post->post_content, 'mad_email_register')) return;
+        wp_enqueue_style('madevma-public', plugin_dir_url(__FILE__) . 'assets/public.css', [], self::VERSION);
+        wp_enqueue_script('madevma-public', plugin_dir_url(__FILE__) . 'assets/public.js', [], self::VERSION, true);
+    }
+
+    private static function notice($msg, $type='success') { echo '<div class="notice notice-'.esc_attr($type).' is-dismissible"><p>'.esc_html(self::tr($msg)).'</p></div>'; }
     private static function status_label($status) { $map = ['subscribed'=>'已订阅','unsubscribed'=>'已退订','draft'=>'草稿','scheduled'=>'已定时','queued'=>'排队中','sending'=>'发送中','finished'=>'已完成','pending'=>'待发送','sent'=>'已发送','failed'=>'发送失败']; return $map[$status] ?? $status; }
     private static function wrap_start($title) { echo '<div class="wrap"><h1>'.esc_html($title).'</h1>'; }
     private static function wrap_end() { echo '</div>'; }
     private static function nonce($action) { wp_nonce_field($action, 'mad_em_nonce'); echo '<input type="hidden" name="mad_em_action" value="'.esc_attr($action).'">'; }
-    private static function verify($action) { return current_user_can('manage_options'); }
+    private static function verify($action) {
+        return self::can_manage()
+            && isset($_POST['mad_em_nonce'])
+            && wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['mad_em_nonce'])), $action);
+    }
 
     private static function auto_vars() { return ['name','name1','email','unsubscribe_url']; }
     private static function title_vars() { return ['title','title1']; }
@@ -437,12 +501,12 @@ class MAD_Event_Mailer {
     }
 
     public static function export_template_csv() {
-        if (!current_user_can('manage_options')) wp_die(esc_html__('Insufficient permissions.', 'mad-event-mailer'));
-        $template_id = absint($_GET['template_id'] ?? $_GET['mad_em_export_template_csv'] ?? 0);
-        if (empty($_GET['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'mad_em_export_template_csv_'.$template_id)) wp_die(esc_html__('The link has expired. Please return to the admin page and export again.', 'mad-event-mailer'));
+        if (!self::can_manage()) wp_die(esc_html(self::tr('权限不足。')));
+        $template_id = absint(wp_unslash($_GET['template_id'] ?? $_GET['mad_em_export_template_csv'] ?? 0));
+        if (empty($_GET['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'mad_em_export_template_csv_'.$template_id)) wp_die(esc_html(self::tr('导出链接已过期，请返回后台重新导出。')));
         global $wpdb;
         $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
-        if (!$template) wp_die(esc_html__('Template not found.', 'mad-event-mailer'));
+        if (!$template) wp_die(esc_html(self::tr('模板不存在。')));
         $vars = self::editable_vars(self::extract_vars($template->html . ' ' . $template->subject));
         $headers = array_merge(['email','name','events'], $vars);
         while (ob_get_level()) { ob_end_clean(); }
@@ -456,7 +520,7 @@ class MAD_Event_Mailer {
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
         echo self::csv_line($headers);
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
-        echo self::csv_line(array_merge(['example@example.com','张三','活动名称或 slug'], array_fill(0, count($vars), '')));
+        echo self::csv_line(array_merge(['example@example.com', self::tr('张三'), self::tr('活动名称或 slug')], array_fill(0, count($vars), '')));
         exit;
     }
 
@@ -474,35 +538,36 @@ class MAD_Event_Mailer {
     }
 
     public static function preview_template_page() {
-        if (!current_user_can('manage_options')) wp_die(esc_html__('Insufficient permissions.', 'mad-event-mailer'));
-        $template_id = absint($_GET['template_id'] ?? 0);
-        if (!$template_id || !isset($_GET['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'mad_em_preview_template_'.$template_id)) wp_die(esc_html__('The preview link has expired. Please open the preview again.', 'mad-event-mailer'));
+        if (!self::can_manage()) wp_die(esc_html(self::tr('权限不足。')));
+        $template_id = absint(wp_unslash($_GET['template_id'] ?? 0));
+        if (!$template_id || !isset($_GET['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'mad_em_preview_template_'.$template_id)) wp_die(esc_html(self::tr('链接已过期，请返回后台重新打开预览。')));
         global $wpdb;
         $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
-        if (!$template) wp_die(esc_html__('Template not found.', 'mad-event-mailer'));
+        if (!$template) wp_die(esc_html(self::tr('模板不存在。')));
         $vars = self::extract_vars($template->html . ' ' . $template->subject);
         $sample = [];
         foreach ($vars as $v) {
-            if (in_array($v, ['name','name1'], true)) $sample[$v] = '张三';
-            elseif (in_array($v, ['title','title1'], true)) $sample[$v] = '示例邮件标题';
+            if (in_array($v, ['name','name1'], true)) $sample[$v] = self::tr('张三');
+            elseif (in_array($v, ['title','title1'], true)) $sample[$v] = self::tr('示例邮件标题');
             elseif ($v === 'email') $sample[$v] = 'example@example.com';
             elseif ($v === 'unsubscribe_url') $sample[$v] = self::get_unsubscribe_url();
-            else $sample[$v] = '示例 '.$v;
+            else $sample[$v] = self::tr('示例 ').$v;
         }
         $sample['unsubscribe_url'] = self::get_unsubscribe_url();
         header('Content-Type: text/html; charset=UTF-8');
         $set = self::settings();
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Email HTML is filtered by safe_email_html() immediately before output.
         echo self::safe_email_html( self::render_template( self::ensure_unsubscribe_notice( (string) $template->html, sanitize_text_field( $set['default_unsubscribe_lang'] ?? 'zh' ), ! empty( $set['default_unsubscribe_button'] ) ), $sample ) );
         exit;
     }
 
     public static function ajax_preview_send() {
-        if (!current_user_can('manage_options')) wp_send_json_error(['message'=>'权限不足。'], 403);
+        if (!self::can_manage()) wp_send_json_error(['message'=>self::tr('权限不足。')], 403);
         check_ajax_referer('mad_em_preview_send', 'nonce');
         global $wpdb;
         $template_id = absint(wp_unslash($_POST['template_id'] ?? 0));
         $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
-        if (!$template) wp_send_json_error(['message'=>'模板不存在。']);
+        if (!$template) wp_send_json_error(['message'=>self::tr('模板不存在。')]);
         $subject = sanitize_text_field(wp_unslash($_POST['subject'] ?? ''));
         $vars = [];
         $posted_var = isset($_POST['var']) && is_array($_POST['var']) ? wp_unslash($_POST['var']) : [];
@@ -527,14 +592,14 @@ class MAD_Event_Mailer {
 
 
     public static function ajax_test_send() {
-        if (!current_user_can('manage_options')) wp_send_json_error(['message'=>'权限不足。'], 403);
+        if (!self::can_manage()) wp_send_json_error(['message'=>self::tr('权限不足。')], 403);
         check_ajax_referer('mad_em_preview_send', 'nonce');
         global $wpdb;
         $to = sanitize_email(wp_unslash($_POST['test_email'] ?? ''));
-        if (!is_email($to)) wp_send_json_error(['message'=>'请填写有效的测试邮箱。']);
+        if (!is_email($to)) wp_send_json_error(['message'=>self::tr('请填写有效的测试邮箱。')]);
         $template_id = absint(wp_unslash($_POST['template_id'] ?? 0));
         $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
-        if (!$template) wp_send_json_error(['message'=>'模板不存在。']);
+        if (!$template) wp_send_json_error(['message'=>self::tr('模板不存在。')]);
         $subject = sanitize_text_field(wp_unslash($_POST['subject'] ?? '测试邮件'));
         $vars = [];
         $posted_var = isset($_POST['var']) && is_array($_POST['var']) ? wp_unslash($_POST['var']) : [];
@@ -560,8 +625,8 @@ class MAD_Event_Mailer {
         $body = self::render_template(self::ensure_unsubscribe_notice($template->html, $unsub_lang, $include_unsub), $vars);
         $subj = self::render_template($subject ?: $template->subject, $vars);
         $ok = wp_mail($to, $subj, $body, self::mail_headers());
-        if (!$ok) wp_send_json_error(['message'=>'测试邮件发送失败，请检查 SMTP 设置或服务器日志。']);
-        wp_send_json_success(['message'=>'测试邮件已发送到 '.$to]);
+        if (!$ok) wp_send_json_error(['message'=>self::tr('测试邮件发送失败，请检查 SMTP 设置或服务器日志。')]);
+        wp_send_json_success(['message'=>self::tr('测试邮件已发送到').$to]);
     }
 
     public static function maybe_handle_post() {
@@ -570,7 +635,7 @@ class MAD_Event_Mailer {
         $action = sanitize_text_field(wp_unslash($_POST['mad_em_action']));
         $nonce_action = in_array($action, ['save_campaign_draft','export_current_csv','preview_current_static'], true) ? 'create_campaign' : $action;
         if ($action === 'export_subscribers_csv') $nonce_action = 'export_subscribers_csv';
-        if (!current_user_can('manage_options')) return;
+        if (!self::can_manage()) wp_die(esc_html(self::tr('权限不足。')), '', ['response' => 403]);
         check_admin_referer($nonce_action, 'mad_em_nonce');
         global $wpdb;
 
@@ -730,9 +795,9 @@ class MAD_Event_Mailer {
     }
 
     private static function export_current_form_csv() {
-        if (!current_user_can('manage_options')) wp_die(esc_html__('Insufficient permissions.', 'mad-event-mailer'));
+        if (!self::can_manage()) wp_die(esc_html(self::tr('权限不足。')));
         $template = self::current_template_from_post();
-        if (!$template) wp_die(esc_html__('Please select a template first.', 'mad-event-mailer'));
+        if (!$template) wp_die(esc_html(self::tr('请先选择模板。')));
         $posted_vars = self::posted_vars_for_preview();
         $scan = $template->html . ' ' . $template->subject . ' ' . implode(' ', array_map('strval', $posted_vars));
         $vars = array_values(array_diff(self::editable_vars(self::extract_vars($scan)), self::body_vars()));
@@ -748,14 +813,14 @@ class MAD_Event_Mailer {
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
         echo self::csv_line($headers);
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
-        echo self::csv_line(array_merge(['example@example.com','张三','活动名称或 slug'], array_fill(0, count($vars), '')));
+        echo self::csv_line(array_merge(['example@example.com', self::tr('张三'), self::tr('活动名称或 slug')], array_fill(0, count($vars), '')));
         exit;
     }
 
     private static function preview_current_form_static() {
-        if (!current_user_can('manage_options')) wp_die(esc_html__('Insufficient permissions.', 'mad-event-mailer'));
+        if (!self::can_manage()) wp_die(esc_html(self::tr('权限不足。')));
         $template = self::current_template_from_post();
-        if (!$template) wp_die(esc_html__('Please select a template first.', 'mad-event-mailer'));
+        if (!$template) wp_die(esc_html(self::tr('请先选择模板。')));
         $html = (string)$template->html;
         // 发送前预览只做结构预览：所有变量都保留为 {{变量名}}，不读取收件人或变量实际值，也不会发送邮件。
         $include_unsub = !empty($_POST['include_unsubscribe']);
@@ -764,6 +829,7 @@ class MAD_Event_Mailer {
         $html = self::ensure_unsubscribe_notice($html, $unsub_lang, $include_unsub);
         while (ob_get_level()) { ob_end_clean(); }
         header('Content-Type: text/html; charset=UTF-8');
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Email HTML is filtered by safe_email_html() immediately before output.
         echo self::safe_email_html($html);
         exit;
     }
@@ -859,7 +925,7 @@ class MAD_Event_Mailer {
 
     private static function default_recipient_list_from_post($field = 'default_event') {
         if (empty($_POST[$field])) return [];
-        [$event_id, $language] = self::parse_event_language_value(wp_unslash($_POST[$field]));
+        [$event_id, $language] = self::parse_event_language_value(sanitize_text_field(wp_unslash($_POST[$field])));
         return $event_id ? [['event_id'=>$event_id, 'language'=>$language]] : [];
     }
 
@@ -877,8 +943,9 @@ class MAD_Event_Mailer {
     }
 
     private static function current_public_url() {
-        $request_uri = isset($_SERVER['REQUEST_URI']) ? wp_unslash($_SERVER['REQUEST_URI']) : '/';
-        return home_url($request_uri);
+        $object_id = get_queried_object_id();
+        $permalink = $object_id ? get_permalink($object_id) : '';
+        return $permalink ? $permalink : home_url('/');
     }
 
     private static function public_form_redirect_url($language) {
@@ -1070,9 +1137,14 @@ class MAD_Event_Mailer {
         nocache_headers();
         header('Content-Type: text/csv; charset=UTF-8');
         header('Content-Disposition: attachment; filename=mad-mailer-subscribers.csv');
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- UTF-8 BOM for CSV download.
         echo "\xEF\xBB\xBF";
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV fields are encoded by csv_line(); this is not HTML output.
         echo self::csv_line(['email','name','status','events']);
-        foreach ($rows as $row) echo self::csv_line([$row->email, $row->name, $row->status, implode('; ', self::subscriber_event_labels($row->id))]);
+        foreach ($rows as $row) {
+            // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV fields are encoded by csv_line(); this is not HTML output.
+            echo self::csv_line([$row->email, $row->name, $row->status, implode('; ', self::subscriber_event_labels($row->id))]);
+        }
         exit;
     }
 
@@ -1101,7 +1173,7 @@ class MAD_Event_Mailer {
         $template_id = absint(wp_unslash($_POST['template_id'] ?? 0));
         $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
         if (!$template) return 0;
-        [$event_id, $recipient_language] = self::parse_event_language_value(wp_unslash($_POST['event_id'] ?? '0|zh'));
+        [$event_id, $recipient_language] = self::parse_event_language_value(sanitize_text_field(wp_unslash($_POST['event_id'] ?? '0|zh')));
         $subject = sanitize_text_field(wp_unslash($_POST['subject'] ?? $template->subject));
         $vars = [];
         $posted_var = isset($_POST['var']) && is_array($_POST['var']) ? wp_unslash($_POST['var']) : [];
@@ -1220,7 +1292,8 @@ class MAD_Event_Mailer {
         }
     }
 
-    public static function page_settings() {
+    public static function page_settings() { self::render_admin_page('render_page_settings'); }
+    private static function render_page_settings() {
         $s = self::settings();
         $sender_value = trim((string)($s['sender_name'] ?? ($s['from_name'] ?? '')));
         self::wrap_start('SMTP 设置'); ?>
@@ -1244,16 +1317,14 @@ class MAD_Event_Mailer {
         <?php submit_button('保存设置'); ?></form><?php self::wrap_end();
     }
 
-    public static function page_templates() {
+    public static function page_templates() { self::render_admin_page('render_page_templates'); }
+    private static function render_page_templates() {
         global $wpdb;
         $edit = null;
         if (!empty($_GET['edit'])) $edit = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), absint(wp_unslash($_GET['edit'])) ) );
         self::wrap_start('邮件模板');
         $show_query = !empty($query_result);
         ?>
-        <style>
-            .mad-em-modal{display:none;position:fixed;z-index:100000;inset:0;background:rgba(0,0,0,.48);padding:36px;box-sizing:border-box}.mad-em-modal-box{max-width:980px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 24px 80px rgba(0,0,0,.28);padding:16px}.mad-em-modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.mad-em-modal iframe{width:100%;height:720px;border:1px solid #dcdcde;border-radius:8px;background:#fff}.mad-em-template-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.mad-em-template-actions form{margin:0}.mad-em-template-actions a,.mad-em-template-actions button{margin:0!important;white-space:nowrap}
-        </style>
         <div class="notice notice-info" style="padding:12px 14px"><p><strong>模板写法规则：</strong></p><p>变量统一使用 <code>{{变量名}}</code>，只能包含英文、数字、下划线或短横线。<code>{{title}}</code> / <code>{{title1}}</code> 会自动使用发送页面的邮件主题；<code>{{name}}</code> / <code>{{name1}}</code> 会自动使用收件人姓名；<code>{{email}}</code> 自动使用收件人邮箱；<code>{{unsubscribe_url}}</code> 自动生成退订链接。</p><p>通用模板建议保留一个正文插槽：<code>{{message1}}</code> 或 <code>{{message}}</code>。发送邮件时可以直接用富文本编辑器编辑正文内容，正文里还可以继续写 <code>{{score}}</code>、<code>{{rank}}</code> 这种变量；上传 CSV 时同名列会覆盖每个收件人的值。</p></div>
         <h2>基于通用模板快速创建</h2>
         <form method="post"><?php self::nonce('save_quick_template'); ?>
@@ -1271,21 +1342,14 @@ class MAD_Event_Mailer {
         <tr><th>HTML</th><td><textarea class="large-text code" name="html" rows="18"><?php echo esc_textarea($edit->html ?? ''); ?></textarea></td></tr></table>
         <?php submit_button('保存模板'); ?></form>
         <h2>已保存模板</h2><table class="widefat striped"><thead><tr><th>ID</th><th>模板名称</th><th>邮件主题</th><th>变量</th><th>操作</th></tr></thead><tbody><?php foreach (self::get_templates() as $t): $vars=self::extract_vars($t->html.' '.$t->subject); ?>
-        <tr><td><?php echo (int)$t->id; ?></td><td><?php echo esc_html($t->name); ?><?php if (self::is_builtin_template($t->id)) echo ' <span class="description">通用模板</span>'; ?></td><td><?php echo esc_html($t->subject); ?></td><td><?php echo esc_html(implode(', ', $vars)); ?></td><td class="mad-em-template-actions"><a href="<?php echo esc_url(admin_url('admin.php?page=mad-em-templates&edit='.$t->id)); ?>">编辑</a><button type="button" class="button-link mad-em-template-preview" data-url="<?php echo esc_url(self::preview_url($t->id)); ?>">预览</button><a href="<?php echo esc_url(self::export_url($t->id)); ?>">导出收件人模板</a><?php if (!self::is_builtin_template($t->id)): ?><form method="post"><?php self::nonce('delete_template'); ?><input type="hidden" name="id" value="<?php echo (int)$t->id; ?>"><button class="button-link-delete" onclick="return confirm('确定删除吗？')">删除</button></form><?php else: ?><span class="description">不可删除</span><?php endif; ?></td></tr>
+        <tr><td><?php echo (int)$t->id; ?></td><td><?php echo esc_html($t->name); ?><?php if (self::is_builtin_template($t->id)) echo ' <span class="description">通用模板</span>'; ?></td><td><?php echo esc_html($t->subject); ?></td><td><?php echo esc_html(implode(', ', $vars)); ?></td><td class="mad-em-template-actions"><a href="<?php echo esc_url(admin_url('admin.php?page=mad-em-templates&edit='.$t->id)); ?>">编辑</a><button type="button" class="button-link mad-em-template-preview" data-url="<?php echo esc_url(self::preview_url($t->id)); ?>">预览</button><a href="<?php echo esc_url(self::export_url($t->id)); ?>">导出收件人模板</a><?php if (!self::is_builtin_template($t->id)): ?><form method="post" data-confirm-delete="确定删除吗？"><?php self::nonce('delete_template'); ?><input type="hidden" name="id" value="<?php echo (int)$t->id; ?>"><button class="button-link-delete">删除</button></form><?php else: ?><span class="description">不可删除</span><?php endif; ?></td></tr>
         <?php endforeach; ?></tbody></table>
         <div class="mad-em-modal" id="madEmTemplateModal"><div class="mad-em-modal-box"><div class="mad-em-modal-head"><strong>模板预览</strong><button type="button" class="button" id="madEmTemplateClose">关闭</button></div><iframe id="madEmTemplateFrame"></iframe></div></div>
-        <script>
-        (function(){
-            var modal=document.getElementById('madEmTemplateModal'), frame=document.getElementById('madEmTemplateFrame'), close=document.getElementById('madEmTemplateClose');
-            document.querySelectorAll('.mad-em-template-preview').forEach(function(btn){btn.addEventListener('click',function(){frame.src=this.getAttribute('data-url'); modal.style.display='block';});});
-            close.addEventListener('click',function(){modal.style.display='none'; frame.src='about:blank';});
-            modal.addEventListener('click',function(e){if(e.target===modal){modal.style.display='none'; frame.src='about:blank';}});
-        })();
-        </script>
         <?php self::wrap_end();
     }
 
-    public static function page_events() {
+    public static function page_events() { self::render_admin_page('render_page_events'); }
+    private static function render_page_events() {
         global $wpdb; $edit=null; if (!empty($_GET['edit'])) $edit=$wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('events'), absint(wp_unslash($_GET['edit'])) ) );
         self::wrap_start('活动管理'); ?>
         <form method="post"><?php self::nonce('save_event'); ?><input type="hidden" name="id" value="<?php echo esc_attr($edit->id ?? 0); ?>">
@@ -1295,18 +1359,18 @@ class MAD_Event_Mailer {
         <tr><th>启用</th><td><label><input type="checkbox" name="active" <?php checked(($edit->active ?? 1), 1); ?>> 在前台注册表单中显示</label></td></tr></table><?php submit_button('保存活动'); ?></form>
         <form method="post" id="mad-em-event-order-form"><?php self::nonce('save_event_order'); ?>
         <table class="widefat striped"><thead><tr><th style="width:70px">排序</th><th>ID</th><th>活动名称</th><th>别名 / Slug</th><th>中文收件人</th><th>英文收件人</th><th>启用</th><th>操作</th></tr></thead><tbody id="mad-em-event-order"><?php foreach (self::get_events(false) as $e): $zh_count=(int)$wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM %i WHERE event_id=%d AND language=%s', self::table('subscriber_events'), $e->id, 'zh')); $en_count=(int)$wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM %i WHERE event_id=%d AND language=%s', self::table('subscriber_events'), $e->id, 'en')); ?>
-        <tr draggable="true"><td class="mad-em-drag-handle" style="cursor:move">↕ 拖拽<input type="hidden" name="event_order[]" value="<?php echo (int)$e->id; ?>"></td><td><?php echo (int)$e->id; ?></td><td><?php echo esc_html($e->name); ?></td><td><?php echo esc_html($e->slug); ?></td><td><?php echo $zh_count; ?></td><td><?php echo $en_count; ?></td><td><?php echo $e->active ? '是' : '否'; ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=mad-em-events&edit='.$e->id)); ?>">编辑</a> <button class="button-link-delete" type="submit" form="mad-em-delete-event-<?php echo (int)$e->id; ?>" onclick="return confirm('确定删除这个活动吗？')">删除</button></td></tr>
+        <tr draggable="true"><td class="mad-em-drag-handle">↕ 拖拽<input type="hidden" name="event_order[]" value="<?php echo (int)$e->id; ?>"></td><td><?php echo (int)$e->id; ?></td><td><?php echo esc_html($e->name); ?></td><td><?php echo esc_html($e->slug); ?></td><td><?php echo esc_html((string)$zh_count); ?></td><td><?php echo esc_html((string)$en_count); ?></td><td><?php echo $e->active ? '是' : '否'; ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=mad-em-events&edit='.$e->id)); ?>">编辑</a> <button class="button-link-delete" type="submit" form="mad-em-delete-event-<?php echo (int)$e->id; ?>" data-confirm="确定删除这个活动吗？">删除</button></td></tr>
         <?php endforeach; ?></tbody></table>
         <?php submit_button('保存活动排序', 'secondary'); ?></form>
         <?php foreach (self::get_events(false) as $e): ?><form method="post" id="mad-em-delete-event-<?php echo (int)$e->id; ?>" style="display:none"><?php self::nonce('delete_event'); ?><input type="hidden" name="id" value="<?php echo (int)$e->id; ?>"></form><?php endforeach; ?>
-        <script>(function(){const tbody=document.getElementById('mad-em-event-order');if(!tbody)return;let dragging=null;tbody.querySelectorAll('tr').forEach(row=>{row.addEventListener('dragstart',function(){dragging=row;row.style.opacity='.55';});row.addEventListener('dragend',function(){row.style.opacity='';dragging=null;});row.addEventListener('dragover',function(e){e.preventDefault();if(!dragging||dragging===row)return;const rect=row.getBoundingClientRect();const after=(e.clientY-rect.top)>rect.height/2;tbody.insertBefore(dragging,after?row.nextSibling:row);});});})();</script>
         <?php self::wrap_end();
     }
 
-    public static function page_subscribers() {
+    public static function page_subscribers() { self::render_admin_page('render_page_subscribers'); }
+    private static function render_page_subscribers() {
         global $wpdb;
         $events = self::get_events(false);
-        $edit_id = absint($_GET['edit'] ?? 0);
+        $edit_id = absint(wp_unslash($_GET['edit'] ?? 0));
         $edit = $edit_id ? $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('subscribers'), $edit_id ) ) : null;
         $selected_lists = $edit ? self::subscriber_event_language_values($edit->id) : [];
         $filter_value = sanitize_text_field(wp_unslash($_GET['subscriber_filter'] ?? '0'));
@@ -1325,19 +1389,20 @@ class MAD_Event_Mailer {
         <form method="get" style="margin:12px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input type="hidden" name="page" value="mad-em-subscribers"><label>按活动语言筛选 <select name="subscriber_filter"><option value="0">全部收件人</option><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): $value=self::event_language_value($e->id,$list_lang); ?><option value="<?php echo esc_attr($value); ?>" <?php selected($filter_value,$value); ?>><?php echo esc_html(self::event_language_label($e,$list_lang)); ?></option><?php endforeach; endforeach; ?></select></label><?php submit_button('筛选', 'secondary', 'submit', false); ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=mad-em-subscribers')); ?>">重置</a></form>
         <form method="post" style="margin:0 0 12px"><?php self::nonce('export_subscribers_csv'); ?><input type="hidden" name="subscriber_filter" value="<?php echo esc_attr($filter_value); ?>"><?php submit_button('导出当前筛选 CSV', 'secondary', 'submit', false); ?> <span class="description">当前筛选共 <?php echo (int)$total; ?> 个收件人。</span></form>
         <table class="widefat striped"><thead><tr><th>邮箱</th><th>姓名</th><th>订阅活动</th><th>状态</th><th>操作</th></tr></thead><tbody><?php foreach($rows as $r): $names=self::subscriber_event_labels($r->id); ?>
-        <tr><td><?php echo esc_html($r->email); ?></td><td><?php echo esc_html($r->name); ?></td><td><?php echo esc_html(implode(', ', $names)); ?></td><td><?php echo esc_html(self::status_label($r->status)); ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=mad-em-subscribers&edit='.$r->id)); ?>">编辑</a> <form method="post" style="display:inline"><?php self::nonce('delete_subscriber'); ?><input type="hidden" name="id" value="<?php echo (int)$r->id; ?>"><button class="button-link-delete" onclick="return confirm('确定删除这个收件人吗？')">删除</button></form></td></tr>
+        <tr><td><?php echo esc_html($r->email); ?></td><td><?php echo esc_html($r->name); ?></td><td><?php echo esc_html(implode(', ', $names)); ?></td><td><?php echo esc_html(self::status_label($r->status)); ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=mad-em-subscribers&edit='.$r->id)); ?>">编辑</a> <form method="post" style="display:inline" data-confirm-delete="确定删除这个收件人吗？"><?php self::nonce('delete_subscriber'); ?><input type="hidden" name="id" value="<?php echo (int)$r->id; ?>"><button class="button-link-delete">删除</button></form></td></tr>
         <?php endforeach; if(empty($rows)): ?><tr><td colspan="5">没有找到收件人。</td></tr><?php endif; ?></tbody></table><?php self::wrap_end();
     }
 
-    public static function page_send() {
+    public static function page_send() { self::render_admin_page('render_page_send'); }
+    private static function render_page_send() {
         global $wpdb;
         $templates = self::get_templates();
         $events = self::get_events(false);
         $settings = self::settings();
-        $load_id = absint($_GET['campaign_id'] ?? 0);
+        $load_id = absint(wp_unslash($_GET['campaign_id'] ?? 0));
         $loaded_campaign = $load_id ? $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('campaigns'), $load_id ) ) : null;
         $loaded_vars = $loaded_campaign ? (json_decode($loaded_campaign->variables, true) ?: []) : [];
-        $selected_id = absint($_GET['template_id'] ?? 0);
+        $selected_id = absint(wp_unslash($_GET['template_id'] ?? 0));
         if ($loaded_campaign && !$selected_id) $selected_id = (int)$loaded_campaign->template_id;
         if (!$selected_id && !empty($templates)) $selected_id = (int)$templates[0]->id;
         $selected_template = null;
@@ -1353,10 +1418,6 @@ class MAD_Event_Mailer {
         if ($loaded_campaign) self::notice('已载入发送任务 #'.$loaded_campaign->id.' 的设置，你可以修改后重新保存草稿或创建新的发送任务。', 'info');
         $show_query = !empty($query_result);
         ?>
-        <style>
-            .mad-em-card{background:#fff;border:1px solid #dcdcde;border-radius:10px;padding:18px 22px;max-width:1180px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
-            .mad-em-help{color:#646970;margin-top:6px}.mad-em-varrow{margin:0 0 14px}.mad-em-varrow textarea{max-width:880px}.mad-em-preview-modal{display:none;position:fixed;z-index:100000;inset:0;background:rgba(0,0,0,.45);padding:40px;box-sizing:border-box}.mad-em-preview-box{background:#fff;border-radius:12px;max-width:920px;margin:0 auto;padding:18px;box-shadow:0 20px 60px rgba(0,0,0,.25)}.mad-em-preview-box iframe{width:100%;height:650px;border:1px solid #dcdcde;border-radius:8px;background:#fff}.mad-em-preview-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.mad-em-preview-actions{display:flex;gap:8px;align-items:center}.mad-em-var-label{display:inline-block;margin-bottom:6px}
-        </style>
         <form method="get" class="mad-em-card" style="margin-bottom:14px">
             <input type="hidden" name="page" value="mad-em">
             <?php if ($loaded_campaign): ?><input type="hidden" name="campaign_id" value="<?php echo (int)$loaded_campaign->id; ?>"><?php endif; ?>
@@ -1408,94 +1469,24 @@ class MAD_Event_Mailer {
             <?php endif; ?>
         </div><p class="mad-em-help">{{name}} / {{name1}} 会自动从收件人姓名获取，{{title}} / {{title1}} 会自动从邮件主题获取，{{unsubscribe_url}} 会自动生成退订链接。正文内容中的变量会在预览和发送时继续替换。</p></td></tr>
         <tr><th>发送方式</th><td><label><input type="radio" name="send_mode" value="now" checked> 立即发送</label> <label><input type="radio" name="send_mode" value="schedule"> 定时发送</label> <input type="datetime-local" name="scheduled_at"></td></tr></table>
-        <p class="submit"><button type="submit" class="button" id="previewBtn" name="mad_em_action" value="preview_current_static" formtarget="_blank" onclick="return window.madEmPreviewSubmit ? window.madEmPreviewSubmit(this) : true;">发送前预览</button> <button type="button" class="button" id="testBtn" onclick="return window.madEmOpenTest ? window.madEmOpenTest() : false;">发送测试邮件</button> <button type="submit" class="button button-secondary" name="mad_em_action" value="save_campaign_draft">保存为草稿</button> <button type="submit" class="button button-primary" name="mad_em_action" value="create_campaign">创建发送任务</button></p></form>
-        <div class="mad-em-preview-modal" id="previewModal"><div class="mad-em-preview-box"><div class="mad-em-preview-head"><strong id="previewTitle">发送前预览</strong><div class="mad-em-preview-actions"><span id="previewStatus" class="description"></span><button type="button" class="button" id="closePreview" onclick="window.madEmCloseModal && window.madEmCloseModal();">关闭</button></div></div><div id="testPanel" style="display:none;margin-bottom:14px;padding:12px;border:1px solid #dcdcde;border-radius:8px;background:#f6f7f7"><p><label><strong>测试邮箱</strong><br><input type="email" id="testEmail" class="regular-text" placeholder="test@example.com"></label></p><div id="testVars"></div><p><button type="button" class="button button-primary" id="sendTestNow">发送测试邮件</button></p></div><iframe id="previewFrame" name="madEmPreviewFrame"></iframe></div></div>
-        <script>
-        (function(){
-            var templateVars = <?php echo wp_json_encode($selected_template ? self::extract_vars($selected_template->html . ' ' . $selected_template->subject) : []); ?> || [];
-            var systemVars = ['name','name1','email','title','title1','unsubscribe_url','message','message1'];
-            function $(id){ return document.getElementById(id); }
-            function syncEditors(){ try { if (window.tinyMCE && tinyMCE.triggerSave) tinyMCE.triggerSave(); } catch(e) {} }
-            function extractVars(text){
-                var out=[], re=/{{\s*([A-Za-z0-9_\-]+)\s*}}/g, m;
-                while((m=re.exec(text||''))!==null){ if(systemVars.indexOf(m[1])===-1 && out.indexOf(m[1])===-1) out.push(m[1]); }
-                return out;
-            }
-            function bodyText(){ syncEditors(); var text=''; var areas=document.querySelectorAll('#bodybox textarea'); for(var i=0;i<areas.length;i++) text+=' '+(areas[i].value||''); return text; }
-            function existingVars(){ var out=[], rows=document.querySelectorAll('#varbox [data-varrow]'); for(var i=0;i<rows.length;i++){ var v=rows[i].getAttribute('data-varrow'); if(v&&out.indexOf(v)===-1) out.push(v); } return out; }
-            function addVarField(v){
-                if(!v || systemVars.indexOf(v)!==-1 || existingVars().indexOf(v)!==-1) return;
-                var box=$('varbox'); if(!box) return;
-                var empty=box.querySelector('.mad-em-empty-vars'); if(empty) empty.parentNode.removeChild(empty);
-                var p=document.createElement('p'); p.className='mad-em-varrow'; p.setAttribute('data-varrow',v);
-                p.innerHTML='<label><strong class="mad-em-var-label">{{'+v+'}}</strong><br><textarea class="large-text" rows="3" name="var['+v+']" placeholder="这里填写全局默认值；如果 CSV 中有同名列，会优先使用每个收件人自己的值。"></textarea></label>';
-                box.appendChild(p);
-            }
-            function refreshVars(){ var vs=extractVars(bodyText()); for(var i=0;i<vs.length;i++) addVarField(vs[i]); }
-            function allVars(){ var out=[], sources=[templateVars, extractVars(bodyText()), existingVars()]; for(var s=0;s<sources.length;s++){ for(var i=0;i<sources[s].length;i++){ var v=sources[s][i]; if(systemVars.indexOf(v)===-1 && out.indexOf(v)===-1) out.push(v); } } return out; }
-            window.madEmCloseModal = function(){ var m=$('previewModal'), f=$('previewFrame'); if(m)m.style.display='none'; if(f){ f.removeAttribute('src'); try{f.src='about:blank';}catch(e){} } };
-            window.madEmPreviewSubmit = function(btn){
-                var form=$('mad-em-send'), modal=$('previewModal'), panel=$('testPanel'), frame=$('previewFrame'), title=$('previewTitle'), status=$('previewStatus');
-                if(!form) return true;
-                if(modal) modal.style.display='block';
-                if(panel) panel.style.display='none';
-                if(frame) frame.style.display='block';
-                if(title) title.textContent='发送前预览';
-                if(status) status.textContent='静态预览：变量会保留为 {{变量名}}，不会发送邮件。';
-                form.target='madEmPreviewFrame';
-                setTimeout(function(){ form.removeAttribute('target'); }, 1200);
-                return true;
-            };
-            window.madEmOpenTest = function(){
-                refreshVars();
-                var modal=$('previewModal'), panel=$('testPanel'), frame=$('previewFrame'), title=$('previewTitle'), status=$('previewStatus'), testVars=$('testVars');
-                if(modal) modal.style.display='block';
-                if(panel) panel.style.display='block';
-                if(frame) frame.style.display='none';
-                if(title) title.textContent='发送测试邮件';
-                if(status) status.textContent='';
-                var vars=allVars(), html='<p class="description">填写测试邮箱和变量示例值。只有点击下面的“发送测试邮件”才会真正发送。</p>';
-                for(var i=0;i<vars.length;i++){ html+='<p><label><strong>{{'+vars[i]+'}}</strong><br><textarea class="large-text" rows="2" data-test-var="'+vars[i]+'" placeholder="测试示例值；不填则保留 {{'+vars[i]+'}}"></textarea></label></p>'; }
-                if(testVars) testVars.innerHTML=html;
-                return false;
-            };
-            function bind(){
-                document.addEventListener('input', function(e){ if(e.target && e.target.closest && e.target.closest('#bodybox')) refreshVars(); });
-                var modes=document.querySelectorAll('input[name="recipient_mode"]');
-                for(var i=0;i<modes.length;i++) modes[i].onchange=function(){ var csv=document.querySelector('.recipient-csv'), ev=document.querySelector('.recipient-event'), checked=document.querySelector('input[name="recipient_mode"]:checked'); if(checked && checked.value==='csv'){ if(csv)csv.style.display='table-row'; if(ev)ev.style.display='none'; } else { if(csv)csv.style.display='none'; if(ev)ev.style.display='table-row'; } };
-                var modal=$('previewModal'); if(modal) modal.addEventListener('click', function(e){ if(e.target===modal) window.madEmCloseModal(); });
-                var send=$('sendTestNow'); if(send) send.onclick=function(e){
-                    e.preventDefault(); syncEditors(); refreshVars();
-                    var email=($('testEmail')&&$('testEmail').value)||''; if(!email){ alert('请填写测试邮箱。'); return false; }
-                    var fd=new FormData($('mad-em-send')); fd.delete('mad_em_action'); fd.append('action','mad_em_test_send'); fd.append('nonce','<?php echo esc_js(wp_create_nonce('mad_em_preview_send')); ?>'); fd.append('test_email', email);
-                    var fields=document.querySelectorAll('[data-test-var]'); for(var i=0;i<fields.length;i++){ var key=fields[i].getAttribute('data-test-var'); fd.append('test_var['+key+']', fields[i].value || '{{'+key+'}}'); }
-                    var status=$('previewStatus'); if(status) status.textContent='正在发送测试邮件...';
-                    fetch(ajaxurl,{method:'POST',body:fd,credentials:'same-origin'}).then(function(r){return r.json();}).then(function(res){ if(status) status.textContent=(res&&res.data&&res.data.message)?res.data.message:(res&&res.success?'测试邮件已发送。':'测试邮件发送失败。'); }).catch(function(){ if(status) status.textContent='测试邮件发送失败，请检查 SMTP 设置或后台权限。'; });
-                    return false;
-                };
-                setTimeout(refreshVars, 600);
-            }
-            if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', bind); else bind();
-        })();
-        </script>
+        <p class="submit"><button type="submit" class="button" id="previewBtn" name="mad_em_action" value="preview_current_static">发送前预览</button> <button type="button" class="button" id="testBtn">发送测试邮件</button> <button type="submit" class="button button-secondary" name="mad_em_action" value="save_campaign_draft">保存为草稿</button> <button type="submit" class="button button-primary" name="mad_em_action" value="create_campaign">创建发送任务</button></p></form>
+        <div class="mad-em-preview-modal" id="previewModal"><div class="mad-em-preview-box"><div class="mad-em-preview-head"><strong id="previewTitle">发送前预览</strong><div class="mad-em-preview-actions"><span id="previewStatus" class="description"></span><button type="button" class="button" id="closePreview">关闭</button></div></div><div id="testPanel" style="display:none;margin-bottom:14px;padding:12px;border:1px solid #dcdcde;border-radius:8px;background:#f6f7f7"><p><label><strong>测试邮箱</strong><br><input type="email" id="testEmail" class="regular-text" placeholder="test@example.com"></label></p><div id="testVars"></div><p><button type="button" class="button button-primary" id="sendTestNow">发送测试邮件</button></p></div><iframe id="previewFrame" name="madEmPreviewFrame"></iframe></div></div>
         <p>注册表单短代码： <code>[mad_email_register]</code></p><?php self::wrap_end();
     }
 
-    public static function page_campaigns() {
+    public static function page_campaigns() { self::render_admin_page('render_page_campaigns'); }
+    private static function render_page_campaigns() {
         global $wpdb; self::wrap_start('发送任务');
         $events = self::get_events(false);
         $status = sanitize_text_field(wp_unslash($_GET['status'] ?? ''));
-        $event_id = absint($_GET['event_id'] ?? 0);
-        $where = 'WHERE 1=1'; $args=[];
-        if ($status !== '') { $where .= ' AND status=%s'; $args[]=$status; }
-        if ($event_id) { $where .= ' AND event_id=%d'; $args[]=$event_id; }
+        $event_id = absint(wp_unslash($_GET['event_id'] ?? 0));
         $campaigns_table = self::table('campaigns');
-        if ($status_filter && $event_filter) {
-            $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE status=%s AND event_id=%d ORDER BY id DESC LIMIT 200', $campaigns_table, $status_filter, $event_filter ) );
-        } elseif ($status_filter) {
-            $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE status=%s ORDER BY id DESC LIMIT 200', $campaigns_table, $status_filter ) );
-        } elseif ($event_filter) {
-            $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE event_id=%d ORDER BY id DESC LIMIT 200', $campaigns_table, $event_filter ) );
+        if ($status !== '' && $event_id) {
+            $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE status=%s AND event_id=%d ORDER BY id DESC LIMIT 200', $campaigns_table, $status, $event_id ) );
+        } elseif ($status !== '') {
+            $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE status=%s ORDER BY id DESC LIMIT 200', $campaigns_table, $status ) );
+        } elseif ($event_id) {
+            $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE event_id=%d ORDER BY id DESC LIMIT 200', $campaigns_table, $event_id ) );
         } else {
             $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC LIMIT 200', $campaigns_table ) );
         }
@@ -1553,11 +1544,8 @@ class MAD_Event_Mailer {
         }
         $show_query = !empty($query_result);
         ?>
-        <style>
-        .mad-em-register-wrap{max-width:860px;margin:36px auto;padding:0 16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}.mad-em-register-card{position:relative;overflow:hidden;background:linear-gradient(180deg,#fff 0%,#f8fbff 100%);border:1px solid rgba(15,23,42,.08);border-radius:28px;box-shadow:0 22px 70px rgba(15,23,42,.12);padding:36px}.mad-em-register-card:before{content:"";position:absolute;inset:0 0 auto 0;height:6px;background:linear-gradient(90deg,#2563eb,#60a5fa,#22c55e)}.mad-em-register-title{font-size:30px;font-weight:800;letter-spacing:-.03em;color:#0f172a;margin:0 0 8px}.mad-em-register-sub{color:#64748b;font-size:15px;line-height:1.8;margin:0 0 26px}.mad-em-tabs{display:flex;gap:10px;background:#eef4ff;border-radius:16px;padding:6px;margin-bottom:24px}.mad-em-tab{flex:1;text-align:center;border:0;border-radius:12px;padding:12px 14px;font-weight:750;cursor:pointer;color:#475569;background:transparent}.mad-em-tab.active{background:#fff;color:#1d4ed8;box-shadow:0 8px 24px rgba(37,99,235,.12)}.mad-em-panel{display:none}.mad-em-panel.active{display:block}.mad-em-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.mad-em-field label{display:block;font-size:14px;font-weight:700;color:#334155;margin-bottom:8px}.mad-em-field input[type=text],.mad-em-field input[type=email]{width:100%;box-sizing:border-box;border:1px solid #dbe3ef;border-radius:15px;background:#fff;padding:14px 15px;font-size:15px;outline:none;transition:.2s}.mad-em-field input:focus{border-color:#3b82f6;box-shadow:0 0 0 4px rgba(59,130,246,.13)}.mad-em-events{margin-top:22px}.mad-em-events-title{font-size:15px;font-weight:800;color:#0f172a;margin-bottom:12px}.mad-em-event-list{display:grid;grid-template-columns:1fr 1fr;gap:12px}.mad-em-event-item{position:relative;display:flex;gap:10px;align-items:center;border:1px solid #e2e8f0;background:#fff;border-radius:16px;padding:15px 18px;cursor:pointer;transition:.2s}.mad-em-event-item:hover{border-color:#93c5fd;box-shadow:0 8px 24px rgba(37,99,235,.08);transform:translateY(-1px)}.mad-em-event-item input{position:absolute;opacity:0;pointer-events:none;width:1px;height:1px}.mad-em-event-item>span{position:relative;display:flex;align-items:center;width:100%;padding-right:30px}.mad-em-event-item>span:after{content:"";position:absolute;right:0;width:20px;height:20px;border-radius:999px;border:2px solid #cbd5e1;background:#fff;box-sizing:border-box;transition:.2s}.mad-em-event-item.is-selected{border-color:#2563eb;background:linear-gradient(135deg,#eff6ff,#fff);box-shadow:0 12px 30px rgba(37,99,235,.14)}.mad-em-event-item.is-selected>span:after{border-color:#2563eb;background:#2563eb;box-shadow:inset 0 0 0 4px #fff}.mad-em-event-name{font-weight:700;color:#1e293b}.mad-em-actions{margin-top:26px;display:flex;gap:12px;align-items:center}.mad-em-submit{border:0;border-radius:16px;padding:14px 22px;font-size:16px;font-weight:800;color:#fff;background:linear-gradient(135deg,#2563eb,#1d4ed8);cursor:pointer;box-shadow:0 12px 24px rgba(37,99,235,.24);transition:.2s}.mad-em-submit:hover{transform:translateY(-1px);box-shadow:0 16px 30px rgba(37,99,235,.30)}.mad-em-submit.danger{background:linear-gradient(135deg,#ef4444,#dc2626);box-shadow:0 12px 24px rgba(239,68,68,.20)}.mad-em-note{font-size:13px;color:#64748b;line-height:1.7}.mad-em-success{max-width:860px;margin:20px auto;padding:14px 16px;border:1px solid #bbf7d0;background:#f0fdf4;color:#166534;border-radius:14px;font-weight:700}.mad-em-warning{max-width:860px;margin:20px auto;padding:14px 16px;border:1px solid #fecaca;background:#fef2f2;color:#991b1b;border-radius:14px;font-weight:700}@media(max-width:680px){.mad-em-grid,.mad-em-event-list{grid-template-columns:1fr}.mad-em-register-card{padding:26px}.mad-em-register-title{font-size:25px}.mad-em-tabs{flex-direction:column}.mad-em-actions{flex-direction:column;align-items:stretch}.mad-em-submit{width:100%}}
-        </style>
-        <?php if (!empty($_GET['mad_em_registered'])) echo '<div class="mad-em-success">订阅已保存。后续相关活动通知会发送到你的邮箱。</div>'; ?>
-        <?php if (!empty($_GET['mad_em_unsubscribed'])) echo '<div class="mad-em-warning">退订已提交。这个邮箱将不再接收活动通知。</div>'; ?>
+        <?php if (!empty(sanitize_text_field(wp_unslash($_GET['mad_em_registered'] ?? '')))) echo '<div class="mad-em-success">订阅已保存。后续相关活动通知会发送到你的邮箱。</div>'; ?>
+        <?php if (!empty(sanitize_text_field(wp_unslash($_GET['mad_em_unsubscribed'] ?? '')))) echo '<div class="mad-em-warning">退订已提交。这个邮箱将不再接收活动通知。</div>'; ?>
         <div class="mad-em-register-wrap"><div class="mad-em-register-card">
             <div class="mad-em-tabs">
                 <button type="button" class="mad-em-tab <?php echo (!$show_unsub && !$show_query) ? 'active' : ''; ?>" data-target="subscribe">订阅通知</button>
@@ -1602,7 +1590,6 @@ class MAD_Event_Mailer {
                 <?php endif; ?>
             </form>
         </div></div>
-        <script>(function(){document.querySelectorAll('.mad-em-tab').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.mad-em-tab').forEach(b=>b.classList.remove('active'));document.querySelectorAll('.mad-em-panel').forEach(p=>p.classList.remove('active'));btn.classList.add('active');const panel=document.querySelector('.mad-em-panel[data-panel="'+btn.dataset.target+'"]');if(panel)panel.classList.add('active');}));function syncEventItem(input){const item=input.closest('.mad-em-event-item');if(item)item.classList.toggle('is-selected',input.checked);}document.querySelectorAll('.mad-em-event-item input[type="checkbox"]').forEach(input=>{syncEventItem(input);input.addEventListener('change',()=>syncEventItem(input));});})();</script>
         <?php $html = ob_get_clean();
         if (self::is_english_language(self::current_public_language())) $html = self::translate_text($html, self::current_public_language());
         return $html;
@@ -1610,6 +1597,6 @@ class MAD_Event_Mailer {
 
 }
 
-register_activation_hook(__FILE__, ['MAD_Event_Mailer', 'activate']);
-register_deactivation_hook(__FILE__, ['MAD_Event_Mailer', 'deactivate']);
-MAD_Event_Mailer::init();
+register_activation_hook(__FILE__, ['MADEVMA_Event_Mailer', 'activate']);
+register_deactivation_hook(__FILE__, ['MADEVMA_Event_Mailer', 'deactivate']);
+MADEVMA_Event_Mailer::init();
