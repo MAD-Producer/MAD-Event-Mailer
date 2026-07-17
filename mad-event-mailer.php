@@ -46,6 +46,7 @@ class MADEVMA_Event_Mailer {
             self::activate();
             update_option('mad_em_version', self::VERSION);
         }
+        self::sync_default_zh_template_layout();
     }
 
     public static function activate() {
@@ -304,6 +305,24 @@ class MADEVMA_Event_Mailer {
                 ]);
             }
         }
+    }
+
+    private static function sync_default_zh_template_layout() {
+        $file = plugin_dir_path(__FILE__) . 'default-template-zh.html';
+        $html = self::read_local_file($file);
+        if ($html === '') return;
+        $layout_hash = hash('sha256', $html);
+        if (get_option('mad_em_default_zh_layout_hash') === $layout_hash) return;
+
+        global $wpdb;
+        $table = self::table('templates');
+        $subject = '{{title1}}';
+        $wpdb->update($table, [
+            'html' => $html,
+            'variables' => wp_json_encode(self::extract_vars($html . ' ' . $subject)),
+            'updated_at' => self::now(),
+        ], ['name' => '默认中文模板']);
+        update_option('mad_em_default_zh_layout_hash', $layout_hash);
     }
 
     private static function upgrade_templates_unsubscribe() {
