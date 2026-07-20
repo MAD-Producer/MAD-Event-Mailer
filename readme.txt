@@ -4,15 +4,15 @@ Tags: email, smtp, newsletter, event, html email, csv
 Requires at least: 6.2
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.2.5
+Stable tag: 2.3.0
 License: GPL v2
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-An HTML email delivery plugin for event notifications. Supports SMTP, template variables, CSV recipients, event subscriptions, shortcode registration, batch sending, scheduled sending and language packs.
+An HTML email delivery plugin for event notifications. Supports SMTP, template variables, CSV recipients, event subscriptions, shortcode registration, batch sending and scheduled sending.
 
 == Description ==
 
-MAD Event Mailer is designed for event operation and notification workflows. It supports SMTP delivery, reusable HTML templates, template variables, CSV recipient import/export, event subscription lists, public subscription forms, batch sending, scheduled sending, draft campaigns, and bilingual interface options.
+MAD Event Mailer is designed for event operation and notification workflows. It supports SMTP delivery, reusable HTML templates, template variables, CSV recipient import/export, event subscription lists, public subscription forms, batch sending, scheduled sending, and draft campaigns. The administration interface defaults to Chinese.
 
 Author: MAD Producer Studio
 Author URI: https://github.com/MAD-Producer
@@ -22,19 +22,27 @@ Author URI: https://github.com/MAD-Producer
 1. Upload the plugin folder to `/wp-content/plugins/mad-event-mailer/`.
 2. Activate the plugin through the WordPress Plugins screen.
 3. Go to MAD Mail / MAD 邮件 and configure SMTP settings.
-4. Create a subscription management page with `[mad_email_register]`.
+4. Create a subscription management page with `[madevma_email_register]`.
 
 == Frequently Asked Questions ==
 
-= Does it support English emails? =
+= Can I configure the images used by the email templates? =
 
-Yes. The plugin includes a default English template and an English interface language pack.
+Yes. Enter the Logo URL and Icon URL under SMTP Settings. The built-in templates use `{{logo_url}}` and `{{icon_url}}`; no remote image URL is hard-coded in the plugin.
 
 = Can I send personalized values from CSV? =
 
 Yes. Use variables such as `{{score}}`, `{{rank}}`, and `{{comment}}`, then include matching CSV columns.
 
 == Changelog ==
+
+= 2.3.0 =
+* Added configurable Logo URL and Icon URL settings and replaced hard-coded template images with variables.
+* Changed all public hooks, options, roles, capabilities, shortcodes, menu slugs, database tables, form fields, and asset selectors to the unique `madevma` prefix.
+* Added one-time migration for existing settings, database records, Mail Manager users, scheduled tasks, and shortcode pages.
+* Removed bundled translation files so translations can be managed by WordPress.org.
+* Kept Chinese as the default administration and public subscription interface.
+* Updated the release package for WordPress.org submission requirements.
 
 = 2.2.5 =
 * Added a dedicated Mail Manager role and capability; only Mail Managers and site administrators can see or use the plugin administration screens.
