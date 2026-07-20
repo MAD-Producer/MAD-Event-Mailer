@@ -16,8 +16,8 @@ The plugin was created for event operation scenarios such as submission notices,
 - **Author:** [MAD Producer Studio](https://github.com/MAD-Producer)
 - **License:** GPL v2
 - **Text domain:** `mad-event-mailer`
-- **Current version:** 2.2.5
-- **Shortcode:** `[mad_email_register]`
+- **Current version:** 2.3.0
+- **Shortcode:** `[madevma_email_register]`
 
 ## Main Features
 
@@ -130,7 +130,7 @@ This makes it suitable for activity-based email notifications, for example:
 Create a WordPress page and insert this shortcode:
 
 ```text
-[mad_email_register]
+[madevma_email_register]
 ```
 
 The generated public form supports:
@@ -170,26 +170,11 @@ Campaigns can be:
 
 The scheduled sending system uses WordPress Cron, so real execution time may depend on site traffic and WordPress Cron behavior.
 
-### Language Pack
+### Email Branding Images
 
-The plugin includes an English language pack:
+The SMTP Settings page provides separate URL fields for the email logo and footer icon. Built-in templates reference these values through `{{logo_url}}` and `{{icon_url}}`, so the plugin does not ship with hard-coded remote image dependencies. Leaving either field blank hides the corresponding image.
 
-```text
-languages/en_US.php
-```
-
-You can configure:
-
-- admin interface language
-- public subscription page language
-
-Available options:
-
-- Chinese
-- English
-- follow WordPress site language
-
-Email content language is controlled by the selected email template and the text you write in the editor.
+The administration and public subscription interfaces default to Chinese. Bundled translation files are intentionally not included; WordPress.org translations can be managed through translate.wordpress.org after publication.
 
 ## Installation
 
@@ -218,7 +203,7 @@ Then activate it from the WordPress admin plugin page.
 2. Create a subscription management page with:
 
    ```text
-   [mad_email_register]
+   [madevma_email_register]
    ```
 
 3. Paste the page URL into the plugin settings.
@@ -307,6 +292,14 @@ Table names may vary depending on the WordPress database prefix.
 - For better deliverability, configure SPF, DKIM, and DMARC for the sender domain.
 
 ## Release Notes
+
+### 2.3.0
+
+- Added Logo URL and Icon URL settings and replaced hard-coded template image addresses with `{{logo_url}}` and `{{icon_url}}`.
+- Migrated public hooks, options, roles, capabilities, shortcodes, menu slugs, database tables, form fields, and asset selectors to the unique `madevma` prefix.
+- Added an automatic one-time migration for existing plugin data and shortcode pages.
+- Removed bundled translation files for WordPress.org compatibility and kept Chinese as the default interface.
+- Updated the WordPress.org and GitHub release package structure.
 
 ### 2.2.4
 

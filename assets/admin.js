@@ -25,14 +25,14 @@
         if (!variable || systemVars.indexOf(variable) !== -1 || existingVars().indexOf(variable) !== -1) return;
         var box = byId('varbox');
         if (!box) return;
-        var empty = box.querySelector('.mad-em-empty-vars');
+        var empty = box.querySelector('.madevma-mailer-empty-vars');
         if (empty) empty.remove();
         var row = document.createElement('p');
-        row.className = 'mad-em-varrow';
+        row.className = 'madevma-mailer-varrow';
         row.setAttribute('data-varrow', variable);
         var label = document.createElement('label');
         var strong = document.createElement('strong');
-        strong.className = 'mad-em-var-label';
+        strong.className = 'madevma-mailer-var-label';
         strong.textContent = '{{' + variable + '}}';
         var textarea = document.createElement('textarea');
         textarea.className = 'large-text';
@@ -51,13 +51,13 @@
     }
 
     function closeTemplateModal() {
-        var modal = byId('madEmTemplateModal'), frame = byId('madEmTemplateFrame');
+        var modal = byId('madevmaTemplateModal'), frame = byId('madevmaTemplateFrame');
         if (modal) modal.style.display = 'none';
         if (frame) frame.src = 'about:blank';
     }
     function bindTemplatePage() {
-        var modal = byId('madEmTemplateModal'), frame = byId('madEmTemplateFrame'), close = byId('madEmTemplateClose');
-        document.querySelectorAll('.mad-em-template-preview').forEach(function (button) {
+        var modal = byId('madevmaTemplateModal'), frame = byId('madevmaTemplateFrame'), close = byId('madevmaTemplateClose');
+        document.querySelectorAll('.madevma-mailer-template-preview').forEach(function (button) {
             button.addEventListener('click', function () { if (frame && modal) { frame.src = button.getAttribute('data-url'); modal.style.display = 'block'; } });
         });
         if (close) close.addEventListener('click', closeTemplateModal);
@@ -73,7 +73,7 @@
         });
     }
     function bindEventOrder() {
-        var body = byId('mad-em-event-order'), dragging = null;
+        var body = byId('madevma-mailer-event-order'), dragging = null;
         if (!body) return;
         body.querySelectorAll('tr').forEach(function (row) {
             row.addEventListener('dragstart', function () { dragging = row; row.style.opacity = '.55'; });
@@ -87,19 +87,19 @@
         });
     }
 
-    window.madEmCloseModal = function () {
+    window.madevmaCloseModal = function () {
         var modal = byId('previewModal'), frame = byId('previewFrame');
         if (modal) modal.style.display = 'none';
         if (frame) { frame.removeAttribute('src'); frame.src = 'about:blank'; }
     };
-    window.madEmPreviewSubmit = function () {
-        var form = byId('mad-em-send'), modal = byId('previewModal'), panel = byId('testPanel'), frame = byId('previewFrame'), title = byId('previewTitle'), status = byId('previewStatus');
+    window.madevmaPreviewSubmit = function () {
+        var form = byId('madevma-mailer-send'), modal = byId('previewModal'), panel = byId('testPanel'), frame = byId('previewFrame'), title = byId('previewTitle'), status = byId('previewStatus');
         if (!form) return true;
         if (modal) modal.style.display = 'block'; if (panel) panel.style.display = 'none'; if (frame) frame.style.display = 'block';
         if (title) title.textContent = config.previewTitle || '发送前预览'; if (status) status.textContent = config.previewStatus || '静态预览：变量会保留为 {{变量名}}，不会发送邮件。';
-        form.target = 'madEmPreviewFrame'; window.setTimeout(function () { form.removeAttribute('target'); }, 1200); return true;
+        form.target = 'madevmaPreviewFrame'; window.setTimeout(function () { form.removeAttribute('target'); }, 1200); return true;
     };
-    window.madEmOpenTest = function () {
+    window.madevmaOpenTest = function () {
         refreshVars();
         var modal = byId('previewModal'), panel = byId('testPanel'), frame = byId('previewFrame'), title = byId('previewTitle'), status = byId('previewStatus'), testVars = byId('testVars');
         if (modal) modal.style.display = 'block'; if (panel) panel.style.display = 'block'; if (frame) frame.style.display = 'none';
@@ -116,21 +116,21 @@
         return false;
     };
     function bindSendPage() {
-        var form = byId('mad-em-send');
+        var form = byId('madevma-mailer-send');
         if (!form) return;
         document.addEventListener('input', function (event) { if (event.target && event.target.closest('#bodybox')) refreshVars(); });
         document.querySelectorAll('input[name="recipient_mode"]').forEach(function (mode) { mode.addEventListener('change', function () {
             var csv = document.querySelector('.recipient-csv'), eventRow = document.querySelector('.recipient-event'), checked = document.querySelector('input[name="recipient_mode"]:checked');
             var useCsv = checked && checked.value === 'csv'; if (csv) csv.style.display = useCsv ? 'table-row' : 'none'; if (eventRow) eventRow.style.display = useCsv ? 'none' : 'table-row';
         }); });
-        var modal = byId('previewModal'); if (modal) modal.addEventListener('click', function (event) { if (event.target === modal) window.madEmCloseModal(); });
-        var preview = byId('previewBtn'); if (preview) preview.addEventListener('click', window.madEmPreviewSubmit);
-        var test = byId('testBtn'); if (test) test.addEventListener('click', window.madEmOpenTest);
-        var close = byId('closePreview'); if (close) close.addEventListener('click', window.madEmCloseModal);
+        var modal = byId('previewModal'); if (modal) modal.addEventListener('click', function (event) { if (event.target === modal) window.madevmaCloseModal(); });
+        var preview = byId('previewBtn'); if (preview) preview.addEventListener('click', window.madevmaPreviewSubmit);
+        var test = byId('testBtn'); if (test) test.addEventListener('click', window.madevmaOpenTest);
+        var close = byId('closePreview'); if (close) close.addEventListener('click', window.madevmaCloseModal);
         var send = byId('sendTestNow'); if (send) send.addEventListener('click', function (event) {
             event.preventDefault(); syncEditors(); refreshVars();
             var email = byId('testEmail') ? byId('testEmail').value : ''; if (!email) { window.alert(config.emailRequired || '请填写测试邮箱。'); return; }
-            var data = new FormData(form); data.delete('mad_em_action'); data.append('action', 'mad_em_test_send'); data.append('nonce', config.previewNonce || ''); data.append('test_email', email);
+            var data = new FormData(form); data.delete('madevma_action'); data.append('action', 'madevma_test_send'); data.append('nonce', config.previewNonce || ''); data.append('test_email', email);
             document.querySelectorAll('[data-test-var]').forEach(function (field) { var key = field.getAttribute('data-test-var'); data.append('test_var[' + key + ']', field.value || '{{' + key + '}}'); });
             var status = byId('previewStatus'); if (status) status.textContent = config.sending || '正在发送测试邮件...';
             window.fetch(config.ajaxUrl, { method: 'POST', body: data, credentials: 'same-origin' }).then(function (response) { return response.json(); }).then(function (result) {
