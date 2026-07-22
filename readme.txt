@@ -1,18 +1,18 @@
 === MAD Event Mailer ===
 Contributors: ruoqin
-Tags: email, smtp, newsletter, event, html email, csv
+Tags: email, smtp, newsletter, event, csv
 Requires at least: 6.2
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.3.0
+Stable tag: 2.3.1
 License: GPL v2
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-An HTML email delivery plugin for event notifications. Supports SMTP, template variables, CSV recipients, event subscriptions, shortcode registration, batch sending and scheduled sending.
+An event email plugin with SMTP, HTML templates, CSV recipients, subscriptions, batch delivery, scheduling, and campaign drafts.
 
 == Description ==
 
-MAD Event Mailer is designed for event operation and notification workflows. It supports SMTP delivery, reusable HTML templates, template variables, CSV recipient import/export, event subscription lists, public subscription forms, batch sending, scheduled sending, and draft campaigns. The administration interface defaults to Chinese.
+MAD Event Mailer is designed for event operation and notification workflows. It supports SMTP delivery, reusable HTML templates, template variables, CSV recipient import/export, event subscription lists, public subscription forms, batch sending, scheduled sending, and draft campaigns. The administration and public subscription interfaces use English source strings and the standard WordPress translation system.
 
 Author: MAD Producer Studio
 Author URI: https://github.com/MAD-Producer
@@ -21,7 +21,7 @@ Author URI: https://github.com/MAD-Producer
 
 1. Upload the plugin folder to `/wp-content/plugins/mad-event-mailer/`.
 2. Activate the plugin through the WordPress Plugins screen.
-3. Go to MAD Mail / MAD 邮件 and configure SMTP settings.
+3. Go to MAD Mail and configure SMTP settings.
 4. Create a subscription management page with `[madevma_email_register]`.
 
 == Frequently Asked Questions ==
@@ -35,6 +35,13 @@ Yes. Enter the Logo URL and Icon URL under SMTP Settings. The built-in templates
 Yes. Use variables such as `{{score}}`, `{{rank}}`, and `{{comment}}`, then include matching CSV columns.
 
 == Changelog ==
+
+= 2.3.1 =
+* Converted the administration and public subscription interfaces to English source strings.
+* Replaced the custom translation helper with standard WordPress gettext functions and the `mad-event-mailer` text domain.
+* Localized dynamic JavaScript messages through WordPress and changed JavaScript fallback text to English.
+* Migrated built-in template names to English while retaining compatibility with existing 2.3.0 data.
+* Limited directory tags to five and shortened the plugin summary to meet WordPress.org metadata requirements.
 
 = 2.3.0 =
 * Added configurable Logo URL and Icon URL settings and replaced hard-coded template images with variables.

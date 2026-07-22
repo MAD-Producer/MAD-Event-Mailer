@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAD Event Mailer
  * Description: An HTML email delivery plugin for event notifications. Supports SMTP, template variables, CSV recipients, event subscriptions, shortcode registration, batch sending and scheduled sending.
- * Version: 2.3.0
+ * Version: 2.3.1
  * Requires at least: 6.2
  * Author: MAD Producer Studio
  * Author URI: https://github.com/MAD-Producer
@@ -14,7 +14,7 @@
 if (!defined('ABSPATH')) exit;
 
 class MADEVMA_Event_Mailer {
-    const VERSION = '2.3.0';
+    const VERSION = '2.3.1';
     const OPT = 'madevma_settings';
     const CRON = 'madevma_process_campaigns';
     const CAP = 'madevma_manage_mailer';
@@ -141,7 +141,7 @@ class MADEVMA_Event_Mailer {
         self::migrate_legacy_230_data();
         self::ensure_223_schema();
         self::seed_defaults();
-        // 退订按钮现在由发送任务选项动态追加，不再直接写入模板。
+        // The unsubscribe button is appended dynamically from the campaign settings.
         if (!wp_next_scheduled(self::CRON)) wp_schedule_event(time() + 60, 'madevma_five_minutes', self::CRON);
         update_option('madevma_version', self::VERSION);
     }
@@ -189,7 +189,7 @@ class MADEVMA_Event_Mailer {
     }
 
     private static function ensure_roles() {
-        add_role(self::ROLE, '邮箱管理员', [
+        add_role(self::ROLE, __( 'Mail Manager', 'mad-event-mailer' ), [
             'read' => true,
             self::CAP => true,
         ]);
@@ -204,14 +204,14 @@ class MADEVMA_Event_Mailer {
     }
 
     public static function cron_schedules($schedules) {
-        $schedules['madevma_five_minutes'] = ['interval' => 300, 'display' => '每 5 分钟'];
+        $schedules['madevma_five_minutes'] = ['interval' => 300, 'display' => __( 'Every 5 minutes', 'mad-event-mailer' )];
         return $schedules;
     }
 
     private static function table($name) { global $wpdb; return $wpdb->prefix . 'madevma_' . $name; }
     private static function now() { return current_time('mysql'); }
     private static function settings() { return wp_parse_args(get_option(self::OPT, []), [
-        'host'=>'', 'port'=>'465', 'secure'=>'ssl', 'username'=>'', 'password'=>'', 'from_email'=>'', 'from_name'=>'', 'sender_name'=>'', 'reply_to'=>'', 'batch_size'=>30, 'logo_url'=>'', 'icon_url'=>'', 'register_page_url'=>'', 'register_page_url_zh'=>'', 'register_page_url_en'=>'', 'default_unsubscribe_button'=>1, 'default_unsubscribe_lang'=>'zh'
+        'host'=>'', 'port'=>'465', 'secure'=>'ssl', 'username'=>'', 'password'=>'', 'from_email'=>'', 'from_name'=>'', 'sender_name'=>'', 'reply_to'=>'', 'batch_size'=>30, 'logo_url'=>'', 'icon_url'=>'', 'register_page_url'=>'', 'register_page_url_zh'=>'', 'register_page_url_en'=>'', 'default_unsubscribe_button'=>1, 'default_unsubscribe_lang'=>'en'
     ]); }
 
     private static function looks_like_no_reply($name) {
@@ -269,16 +269,13 @@ class MADEVMA_Event_Mailer {
     }
 
     private static function render_admin_page($renderer) {
-        if (!self::can_manage()) wp_die(esc_html(self::tr('权限不足。')));
+        if (!self::can_manage()) wp_die(esc_html(__( 'Permission denied.', 'mad-event-mailer' )));
         ob_start();
         call_user_func([__CLASS__, $renderer]);
         $html = ob_get_clean();
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Page renderers escape dynamic values at their source; this preserves WordPress admin forms and editor markup.
         echo $html;
     }
-
-    private static function tr($text) { return $text; }
-
 
     private static function ensure_223_schema() {
         global $wpdb;
@@ -301,12 +298,12 @@ class MADEVMA_Event_Mailer {
         $t = self::table('templates');
         $exists = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i', $t ) );
         if ($exists) return;
-        foreach ([['默认中文模板', 'default-template-zh.html'], ['默认英文模板', 'default-template-en.html']] as $item) {
+        foreach ([['Default Chinese Template', 'default-template-zh.html'], ['Default English Template', 'default-template-en.html']] as $item) {
             $file = plugin_dir_path(__FILE__) . $item[1];
             if (file_exists($file)) {
                 $html = self::read_local_file($file);
                 $wpdb->insert($t, [
-                    'name'=>$item[0], 'subject'=>'{{title1}}', 'summary'=>'内置示例模板', 'html'=>$html,
+                    'name'=>$item[0], 'subject'=>'{{title1}}', 'summary'=>__( 'Built-in sample template', 'mad-event-mailer' ), 'html'=>$html,
                     'variables'=>wp_json_encode(self::extract_vars($html . ' {{title1}}')), 'created_at'=>self::now(), 'updated_at'=>self::now()
                 ]);
             }
@@ -317,17 +314,31 @@ class MADEVMA_Event_Mailer {
         global $wpdb;
         $table = self::table('templates');
         $subject = '{{title1}}';
-        foreach ([['默认中文模板', 'default-template-zh.html'], ['默认英文模板', 'default-template-en.html']] as $template) {
-            $html = self::read_local_file(plugin_dir_path(__FILE__) . $template[1]);
+        $templates = [
+            ['Default Chinese Template', '默认中文模板', 'default-template-zh.html'],
+            ['Default English Template', '默认英文模板', 'default-template-en.html'],
+        ];
+        foreach ($templates as $template) {
+            $html = self::read_local_file(plugin_dir_path(__FILE__) . $template[2]);
             if ($html === '') continue;
-            $hash_option = 'madevma_' . sanitize_key(pathinfo($template[1], PATHINFO_FILENAME)) . '_layout_hash';
+            $template_id = (int) $wpdb->get_var($wpdb->prepare(
+                'SELECT id FROM %i WHERE name IN (%s,%s) ORDER BY id ASC LIMIT 1',
+                $table,
+                $template[0],
+                $template[1]
+            ));
+            if (!$template_id) continue;
+            $hash_option = 'madevma_' . sanitize_key(pathinfo($template[2], PATHINFO_FILENAME)) . '_layout_hash';
             $layout_hash = hash('sha256', $html);
-            if (get_option($hash_option) === $layout_hash) continue;
+            $stored_name = (string) $wpdb->get_var($wpdb->prepare('SELECT name FROM %i WHERE id=%d', $table, $template_id));
+            if (get_option($hash_option) === $layout_hash && $stored_name === $template[0]) continue;
             $wpdb->update($table, [
+                'name' => $template[0],
+                'summary' => __( 'Built-in sample template', 'mad-event-mailer' ),
                 'html' => $html,
                 'variables' => wp_json_encode(self::extract_vars($html . ' ' . $subject)),
                 'updated_at' => self::now(),
-            ], ['name' => $template[0]]);
+            ], ['id' => $template_id]);
             update_option($hash_option, $layout_hash);
         }
     }
@@ -375,13 +386,13 @@ class MADEVMA_Event_Mailer {
 
     public static function menu() {
         if (!self::can_manage()) return;
-        add_menu_page(self::tr('MAD 活动邮件系统'), self::tr('MAD 邮件'), self::CAP, 'madevma-mailer', [__CLASS__, 'page_send'], 'dashicons-email-alt2', 58);
-        add_submenu_page('madevma-mailer', self::tr('发送 / 定时发送'), self::tr('发送 / 定时发送'), self::CAP, 'madevma-mailer', [__CLASS__, 'page_send']);
-        add_submenu_page('madevma-mailer', self::tr('邮件模板'), self::tr('邮件模板'), self::CAP, 'madevma-mailer-templates', [__CLASS__, 'page_templates']);
-        add_submenu_page('madevma-mailer', self::tr('活动管理'), self::tr('活动管理'), self::CAP, 'madevma-mailer-events', [__CLASS__, 'page_events']);
-        add_submenu_page('madevma-mailer', self::tr('收件人'), self::tr('收件人'), self::CAP, 'madevma-mailer-subscribers', [__CLASS__, 'page_subscribers']);
-        add_submenu_page('madevma-mailer', self::tr('发送任务'), self::tr('发送任务'), self::CAP, 'madevma-mailer-campaigns', [__CLASS__, 'page_campaigns']);
-        add_submenu_page('madevma-mailer', self::tr('SMTP 设置'), self::tr('SMTP 设置'), self::CAP, 'madevma-mailer-settings', [__CLASS__, 'page_settings']);
+        add_menu_page(__( 'MAD Event Mailer', 'mad-event-mailer' ), __( 'MAD Mailer', 'mad-event-mailer' ), self::CAP, 'madevma-mailer', [__CLASS__, 'page_send'], 'dashicons-email-alt2', 58);
+        add_submenu_page('madevma-mailer', __( 'Send / Schedule', 'mad-event-mailer' ), __( 'Send / Schedule', 'mad-event-mailer' ), self::CAP, 'madevma-mailer', [__CLASS__, 'page_send']);
+        add_submenu_page('madevma-mailer', __( 'Email Templates', 'mad-event-mailer' ), __( 'Email Templates', 'mad-event-mailer' ), self::CAP, 'madevma-mailer-templates', [__CLASS__, 'page_templates']);
+        add_submenu_page('madevma-mailer', __( 'Events', 'mad-event-mailer' ), __( 'Events', 'mad-event-mailer' ), self::CAP, 'madevma-mailer-events', [__CLASS__, 'page_events']);
+        add_submenu_page('madevma-mailer', __( 'Subscribers', 'mad-event-mailer' ), __( 'Subscribers', 'mad-event-mailer' ), self::CAP, 'madevma-mailer-subscribers', [__CLASS__, 'page_subscribers']);
+        add_submenu_page('madevma-mailer', __( 'Campaigns', 'mad-event-mailer' ), __( 'Campaigns', 'mad-event-mailer' ), self::CAP, 'madevma-mailer-campaigns', [__CLASS__, 'page_campaigns']);
+        add_submenu_page('madevma-mailer', __( 'SMTP Settings', 'mad-event-mailer' ), __( 'SMTP Settings', 'mad-event-mailer' ), self::CAP, 'madevma-mailer-settings', [__CLASS__, 'page_settings']);
     }
 
     public static function enqueue_admin_assets() {
@@ -393,18 +404,18 @@ class MADEVMA_Event_Mailer {
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'previewNonce' => wp_create_nonce('madevma_preview_send'),
             'templateVars' => self::admin_selected_template_vars(),
-            'confirmDelete' => self::tr('确定删除吗？'),
-            'varPlaceholder' => self::tr('这里填写全局默认值；如果 CSV 中有同名列，会优先使用每个收件人自己的值。'),
-            'previewTitle' => self::tr('发送前预览'),
-            'previewStatus' => self::tr('静态预览：变量会保留为 {{变量名}}，不会发送邮件。'),
-            'testTitle' => self::tr('发送测试邮件'),
-            'testHelp' => self::tr('填写测试邮箱和变量示例值。只有点击下面的“发送测试邮件”才会真正发送。'),
-            'testPlaceholder' => self::tr('测试示例值；不填则保留 {{变量名}}'),
-            'emailRequired' => self::tr('请填写测试邮箱。'),
-            'sending' => self::tr('正在发送测试邮件...'),
-            'sent' => self::tr('测试邮件已发送。'),
-            'failed' => self::tr('测试邮件发送失败。'),
-            'failedPermission' => self::tr('测试邮件发送失败，请检查 SMTP 设置或后台权限。'),
+            'confirmDelete' => __( 'Are you sure you want to delete this?', 'mad-event-mailer' ),
+            'varPlaceholder' => __( 'Enter a global default value here. If the CSV has a matching column, each recipient’s own value takes priority.', 'mad-event-mailer' ),
+            'previewTitle' => __( 'Preview', 'mad-event-mailer' ),
+            'previewStatus' => __( 'Static preview: variables remain as {{variable_name}} and no email will be sent.', 'mad-event-mailer' ),
+            'testTitle' => __( 'Send Test Email', 'mad-event-mailer' ),
+            'testHelp' => __( 'Enter a test email address and sample variable values. Email is sent only when you click “Send Test Email” below.', 'mad-event-mailer' ),
+            'testPlaceholder' => __( 'Test sample value; leave blank to keep {{variable_name}}', 'mad-event-mailer' ),
+            'emailRequired' => __( 'Please enter a test email address.', 'mad-event-mailer' ),
+            'sending' => __( 'Sending test email...', 'mad-event-mailer' ),
+            'sent' => __( 'Test email sent.', 'mad-event-mailer' ),
+            'failed' => __( 'Test email failed.', 'mad-event-mailer' ),
+            'failedPermission' => __( 'Test email failed. Please check SMTP settings or admin permissions.', 'mad-event-mailer' ),
         ]);
     }
 
@@ -424,8 +435,22 @@ class MADEVMA_Event_Mailer {
         wp_enqueue_script('madevma-public', plugin_dir_url(__FILE__) . 'assets/public.js', [], self::VERSION, true);
     }
 
-    private static function notice($msg, $type='success') { echo '<div class="notice notice-'.esc_attr($type).' is-dismissible"><p>'.esc_html(self::tr($msg)).'</p></div>'; }
-    private static function status_label($status) { $map = ['subscribed'=>'已订阅','unsubscribed'=>'已退订','draft'=>'草稿','scheduled'=>'已定时','queued'=>'排队中','sending'=>'发送中','finished'=>'已完成','pending'=>'待发送','sent'=>'已发送','failed'=>'发送失败']; return $map[$status] ?? $status; }
+    private static function notice($msg, $type='success') { echo '<div class="notice notice-'.esc_attr($type).' is-dismissible"><p>'.esc_html($msg).'</p></div>'; }
+    private static function status_label($status) {
+        $map = [
+            'subscribed' => __( 'Subscribed', 'mad-event-mailer' ),
+            'unsubscribed' => __( 'Unsubscribed', 'mad-event-mailer' ),
+            'draft' => __( 'Draft', 'mad-event-mailer' ),
+            'scheduled' => __( 'Scheduled', 'mad-event-mailer' ),
+            'queued' => __( 'Queued', 'mad-event-mailer' ),
+            'sending' => __( 'Sending', 'mad-event-mailer' ),
+            'finished' => __( 'Finished', 'mad-event-mailer' ),
+            'pending' => __( 'Pending', 'mad-event-mailer' ),
+            'sent' => __( 'Sent', 'mad-event-mailer' ),
+            'failed' => __( 'Failed', 'mad-event-mailer' ),
+        ];
+        return $map[$status] ?? $status;
+    }
     private static function wrap_start($title) { echo '<div class="wrap"><h1>'.esc_html($title).'</h1>'; }
     private static function wrap_end() { echo '</div>'; }
     private static function nonce($action) { wp_nonce_field($action, 'madevma_nonce'); echo '<input type="hidden" name="madevma_action" value="'.esc_attr($action).'">'; }
@@ -527,12 +552,12 @@ class MADEVMA_Event_Mailer {
     }
 
     public static function export_template_csv() {
-        if (!self::can_manage()) wp_die(esc_html(self::tr('权限不足。')));
+        if (!self::can_manage()) wp_die(esc_html(__( 'Permission denied.', 'mad-event-mailer' )));
         $template_id = absint(wp_unslash($_GET['template_id'] ?? $_GET['madevma_export_template_csv'] ?? 0));
-        if (empty($_GET['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'madevma_export_template_csv_'.$template_id)) wp_die(esc_html(self::tr('导出链接已过期，请返回后台重新导出。')));
+        if (empty($_GET['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'madevma_export_template_csv_'.$template_id)) wp_die(esc_html(__( 'The export link has expired. Please return to the admin page and export again.', 'mad-event-mailer' )));
         global $wpdb;
         $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
-        if (!$template) wp_die(esc_html(self::tr('模板不存在。')));
+        if (!$template) wp_die(esc_html(__( 'Template not found.', 'mad-event-mailer' )));
         $vars = self::editable_vars(self::extract_vars($template->html . ' ' . $template->subject));
         $headers = array_merge(['email','name','events'], $vars);
         while (ob_get_level()) { ob_end_clean(); }
@@ -546,7 +571,7 @@ class MADEVMA_Event_Mailer {
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
         echo self::csv_line($headers);
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
-        echo self::csv_line(array_merge(['example@example.com', self::tr('张三'), self::tr('活动名称或 slug')], array_fill(0, count($vars), '')));
+        echo self::csv_line(array_merge(['example@example.com', __( 'John Doe', 'mad-event-mailer' ), __( 'Event name or slug', 'mad-event-mailer' )], array_fill(0, count($vars), '')));
         exit;
     }
 
@@ -564,53 +589,61 @@ class MADEVMA_Event_Mailer {
     }
 
     public static function preview_template_page() {
-        if (!self::can_manage()) wp_die(esc_html(self::tr('权限不足。')));
+        if (!self::can_manage()) wp_die(esc_html(__( 'Permission denied.', 'mad-event-mailer' )));
         $template_id = absint(wp_unslash($_GET['template_id'] ?? 0));
-        if (!$template_id || !isset($_GET['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'madevma_preview_template_'.$template_id)) wp_die(esc_html(self::tr('链接已过期，请返回后台重新打开预览。')));
+        if (!$template_id || !isset($_GET['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_GET['_wpnonce'])), 'madevma_preview_template_'.$template_id)) wp_die(esc_html(__( 'The link has expired. Please reopen the preview from the admin page.', 'mad-event-mailer' )));
         global $wpdb;
         $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
-        if (!$template) wp_die(esc_html(self::tr('模板不存在。')));
+        if (!$template) wp_die(esc_html(__( 'Template not found.', 'mad-event-mailer' )));
         $vars = self::extract_vars($template->html . ' ' . $template->subject);
         $sample = [];
         foreach ($vars as $v) {
-            if (in_array($v, ['name','name1'], true)) $sample[$v] = self::tr('张三');
-            elseif (in_array($v, ['title','title1'], true)) $sample[$v] = self::tr('示例邮件标题');
+            if (in_array($v, ['name','name1'], true)) $sample[$v] = __( 'John Doe', 'mad-event-mailer' );
+            elseif (in_array($v, ['title','title1'], true)) $sample[$v] = __( 'Sample Email Subject', 'mad-event-mailer' );
             elseif ($v === 'email') $sample[$v] = 'example@example.com';
             elseif ($v === 'unsubscribe_url') $sample[$v] = self::get_unsubscribe_url();
-            else $sample[$v] = self::tr('示例 ').$v;
+            else $sample[$v] = sprintf(
+                /* translators: %s: template variable name. */
+                __( 'Sample %s', 'mad-event-mailer' ),
+                $v
+            );
         }
         $sample['unsubscribe_url'] = self::get_unsubscribe_url();
         header('Content-Type: text/html; charset=UTF-8');
         $set = self::settings();
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Email HTML is filtered by safe_email_html() immediately before output.
-        echo self::safe_email_html( self::render_template( self::ensure_unsubscribe_notice( (string) $template->html, sanitize_text_field( $set['default_unsubscribe_lang'] ?? 'zh' ), ! empty( $set['default_unsubscribe_button'] ) ), $sample ) );
+        echo self::safe_email_html( self::render_template( self::ensure_unsubscribe_notice( (string) $template->html, sanitize_text_field( $set['default_unsubscribe_lang'] ?? 'en' ), ! empty( $set['default_unsubscribe_button'] ) ), $sample ) );
         exit;
     }
 
     public static function ajax_preview_send() {
-        if (!self::can_manage()) wp_send_json_error(['message'=>self::tr('权限不足。')], 403);
+        if (!self::can_manage()) wp_send_json_error(['message'=>__( 'Permission denied.', 'mad-event-mailer' )], 403);
         check_ajax_referer('madevma_preview_send', 'nonce');
         global $wpdb;
         $template_id = absint(wp_unslash($_POST['template_id'] ?? 0));
         $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
-        if (!$template) wp_send_json_error(['message'=>self::tr('模板不存在。')]);
+        if (!$template) wp_send_json_error(['message'=>__( 'Template not found.', 'mad-event-mailer' )]);
         $subject = sanitize_text_field(wp_unslash($_POST['subject'] ?? ''));
         $vars = [];
         $posted_var = isset($_POST['var']) && is_array($_POST['var']) ? wp_unslash($_POST['var']) : [];
         if (!empty($posted_var)) {
             foreach ($posted_var as $k=>$v) { $key=sanitize_key($k); if ($key !== '') $vars[$key] = self::sanitize_var_value($key, $v); }
         }
-        $vars['name'] = '张三';
-        $vars['name1'] = '张三';
+        $vars['name'] = __( 'John Doe', 'mad-event-mailer' );
+        $vars['name1'] = __( 'John Doe', 'mad-event-mailer' );
         $vars['email'] = 'example@example.com';
-        $vars['title'] = $subject ?: '示例邮件标题';
-        $vars['title1'] = $subject ?: '示例邮件标题';
+        $vars['title'] = $subject ?: __( 'Sample Email Subject', 'mad-event-mailer' );
+        $vars['title1'] = $subject ?: __( 'Sample Email Subject', 'mad-event-mailer' );
         $vars['unsubscribe_url'] = self::get_unsubscribe_url();
         $include_unsub = !empty($_POST['include_unsubscribe']);
-        $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'zh'));
-        $unsub_lang = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'zh';
+        $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'en'));
+        $unsub_lang = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'en';
         foreach (self::editable_vars(self::extract_vars($template->html . ' ' . implode(' ', array_map('strval', $vars)))) as $v) {
-            if (!isset($vars[$v]) || $vars[$v] === '') $vars[$v] = '示例 '.$v;
+            if (!isset($vars[$v]) || $vars[$v] === '') $vars[$v] = sprintf(
+                /* translators: %s: template variable name. */
+                __( 'Sample %s', 'mad-event-mailer' ),
+                $v
+            );
         }
         $html = self::render_template(self::ensure_unsubscribe_notice($template->html, $unsub_lang, $include_unsub), $vars);
         wp_send_json_success(['html'=>self::safe_email_html($html)]);
@@ -618,15 +651,15 @@ class MADEVMA_Event_Mailer {
 
 
     public static function ajax_test_send() {
-        if (!self::can_manage()) wp_send_json_error(['message'=>self::tr('权限不足。')], 403);
+        if (!self::can_manage()) wp_send_json_error(['message'=>__( 'Permission denied.', 'mad-event-mailer' )], 403);
         check_ajax_referer('madevma_preview_send', 'nonce');
         global $wpdb;
         $to = sanitize_email(wp_unslash($_POST['test_email'] ?? ''));
-        if (!is_email($to)) wp_send_json_error(['message'=>self::tr('请填写有效的测试邮箱。')]);
+        if (!is_email($to)) wp_send_json_error(['message'=>__( 'Please enter a valid test email address.', 'mad-event-mailer' )]);
         $template_id = absint(wp_unslash($_POST['template_id'] ?? 0));
         $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
-        if (!$template) wp_send_json_error(['message'=>self::tr('模板不存在。')]);
-        $subject = sanitize_text_field(wp_unslash($_POST['subject'] ?? '测试邮件'));
+        if (!$template) wp_send_json_error(['message'=>__( 'Template not found.', 'mad-event-mailer' )]);
+        $subject = sanitize_text_field(wp_unslash($_POST['subject'] ?? __( 'Test Email', 'mad-event-mailer' )));
         $vars = [];
         $posted_var = isset($_POST['var']) && is_array($_POST['var']) ? wp_unslash($_POST['var']) : [];
         if (!empty($posted_var)) {
@@ -637,22 +670,30 @@ class MADEVMA_Event_Mailer {
             foreach ($posted_test_var as $k=>$v) { $key=sanitize_key($k); if ($key !== '') $vars[$key] = self::sanitize_var_value($key, $v); }
         }
         $vars['email'] = $to;
-        $vars['name'] = $vars['name'] ?? '测试收件人';
+        $vars['name'] = $vars['name'] ?? __( 'Test Recipient', 'mad-event-mailer' );
         $vars['name1'] = $vars['name1'] ?? $vars['name'];
-        $vars['title'] = $subject ?: '测试邮件';
-        $vars['title1'] = $subject ?: '测试邮件';
+        $vars['title'] = $subject ?: __( 'Test Email', 'mad-event-mailer' );
+        $vars['title1'] = $subject ?: __( 'Test Email', 'mad-event-mailer' );
         $vars['unsubscribe_url'] = self::get_unsubscribe_url();
         $include_unsub = !empty($_POST['include_unsubscribe']);
-        $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'zh'));
-        $unsub_lang = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'zh';
+        $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'en'));
+        $unsub_lang = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'en';
         foreach (self::editable_vars(self::extract_vars($template->html . ' ' . $template->subject . ' ' . implode(' ', array_map('strval',$vars)))) as $v) {
-            if (!isset($vars[$v]) || $vars[$v] === '') $vars[$v] = '测试 '.$v;
+            if (!isset($vars[$v]) || $vars[$v] === '') $vars[$v] = sprintf(
+                /* translators: %s: template variable name. */
+                __( 'Test %s', 'mad-event-mailer' ),
+                $v
+            );
         }
         $body = self::render_template(self::ensure_unsubscribe_notice($template->html, $unsub_lang, $include_unsub), $vars);
         $subj = self::render_template($subject ?: $template->subject, $vars);
         $ok = wp_mail($to, $subj, $body, self::mail_headers());
-        if (!$ok) wp_send_json_error(['message'=>self::tr('测试邮件发送失败，请检查 SMTP 设置或服务器日志。')]);
-        wp_send_json_success(['message'=>self::tr('测试邮件已发送到').$to]);
+        if (!$ok) wp_send_json_error(['message'=>__( 'Test email failed. Please check SMTP settings or server logs.', 'mad-event-mailer' )]);
+        wp_send_json_success(['message'=>sprintf(
+            /* translators: %s: test recipient email address. */
+            __( 'Test email sent to %s.', 'mad-event-mailer' ),
+            $to
+        )]);
     }
 
     public static function maybe_handle_post() {
@@ -661,7 +702,7 @@ class MADEVMA_Event_Mailer {
         $action = sanitize_text_field(wp_unslash($_POST['madevma_action']));
         $nonce_action = in_array($action, ['save_campaign_draft','export_current_csv','preview_current_static'], true) ? 'create_campaign' : $action;
         if ($action === 'export_subscribers_csv') $nonce_action = 'export_subscribers_csv';
-        if (!self::can_manage()) wp_die(esc_html(self::tr('权限不足。')), '', ['response' => 403]);
+        if (!self::can_manage()) wp_die(esc_html(__( 'Permission denied.', 'mad-event-mailer' )), '', ['response' => 403]);
         check_admin_referer($nonce_action, 'madevma_nonce');
         global $wpdb;
 
@@ -679,9 +720,16 @@ class MADEVMA_Event_Mailer {
                 'register_page_url_zh'=>esc_url_raw(wp_unslash($_POST['register_page_url_zh'] ?? '')),
                 'register_page_url_en'=>esc_url_raw(wp_unslash($_POST['register_page_url_en'] ?? '')),
                 'default_unsubscribe_button'=>!empty($_POST['default_unsubscribe_button']) ? 1 : 0,
-                'default_unsubscribe_lang'=>in_array(sanitize_text_field(wp_unslash($_POST['default_unsubscribe_lang'] ?? 'zh')), ['zh','en'], true) ? sanitize_text_field(wp_unslash($_POST['default_unsubscribe_lang'])) : 'zh'
+                'default_unsubscribe_lang'=>in_array(sanitize_text_field(wp_unslash($_POST['default_unsubscribe_lang'] ?? 'en')), ['zh','en'], true) ? sanitize_text_field(wp_unslash($_POST['default_unsubscribe_lang'])) : 'en'
             ]);
-            add_action('admin_notices', fn()=>self::notice($sender_name !== '' ? '设置已保存。发件人姓名已更新为：'.$sender_name : '设置已保存。发件人姓名留空时会使用 WordPress 站点名称。'));
+            add_action('admin_notices', fn()=>self::notice($sender_name !== ''
+                ? sprintf(
+                    /* translators: %s: sender name. */
+                    __( 'Settings saved. Sender name updated to: %s', 'mad-event-mailer' ),
+                    $sender_name
+                )
+                : __( 'Settings saved. When the sender name is empty, the WordPress site name will be used.', 'mad-event-mailer' )
+            ));
         }
 
 
@@ -697,7 +745,7 @@ class MADEVMA_Event_Mailer {
             ];
             if ($id) $wpdb->update(self::table('templates'), $data, ['id'=>$id]);
             else { $data['created_at'] = self::now(); $wpdb->insert(self::table('templates'), $data); }
-            add_action('admin_notices', fn()=>self::notice('模板已保存。'));
+            add_action('admin_notices', fn()=>self::notice(__( 'Template saved.', 'mad-event-mailer' )));
         }
 
         if ($action === 'save_quick_template') {
@@ -711,25 +759,25 @@ class MADEVMA_Event_Mailer {
                 else $html = $html . $body;
                 $subject = sanitize_text_field(wp_unslash($_POST['quick_subject'] ?? $base->subject));
                 $wpdb->insert(self::table('templates'), [
-                    'name'=>sanitize_text_field(wp_unslash($_POST['quick_name'] ?? '新模板')),
+                    'name'=>sanitize_text_field(wp_unslash($_POST['quick_name'] ?? __( 'New Template', 'mad-event-mailer' ))),
                     'subject'=>$subject,
-                    'summary'=>'基于通用模板创建，只编辑了正文内容。',
+                    'summary'=>__( 'Created from a general template with only the body content edited.', 'mad-event-mailer' ),
                     'html'=>$html,
                     'variables'=>wp_json_encode(self::extract_vars($html . ' ' . $subject)),
                     'created_at'=>self::now(),
                     'updated_at'=>self::now()
                 ]);
-                add_action('admin_notices', fn()=>self::notice('已基于通用模板创建新邮件模板。'));
+                add_action('admin_notices', fn()=>self::notice(__( 'New email template created from the general template.', 'mad-event-mailer' )));
             }
         }
 
         if ($action === 'delete_template') {
             $id = absint(wp_unslash($_POST['id']));
             if (self::is_builtin_template($id)) {
-                add_action('admin_notices', fn()=>self::notice('通用内置模板不能删除。', 'warning'));
+                add_action('admin_notices', fn()=>self::notice(__( 'Built-in general templates cannot be deleted.', 'mad-event-mailer' ), 'warning'));
             } else {
                 $wpdb->delete(self::table('templates'), ['id'=>$id]);
-                add_action('admin_notices', fn()=>self::notice('模板已删除。'));
+                add_action('admin_notices', fn()=>self::notice(__( 'Template deleted.', 'mad-event-mailer' )));
             }
         }
 
@@ -745,14 +793,14 @@ class MADEVMA_Event_Mailer {
                 $data['created_at']=self::now();
                 $wpdb->insert(self::table('events'), $data);
             }
-            add_action('admin_notices', fn()=>self::notice('活动已保存。'));
+            add_action('admin_notices', fn()=>self::notice(__( 'Event saved.', 'mad-event-mailer' )));
         }
 
         if ($action === 'delete_event') {
             $id = absint(wp_unslash($_POST['id']));
             $wpdb->delete(self::table('subscriber_events'), ['event_id'=>$id]);
             $wpdb->delete(self::table('events'), ['id'=>$id]);
-            add_action('admin_notices', fn()=>self::notice('活动已删除。'));
+            add_action('admin_notices', fn()=>self::notice(__( 'Event deleted.', 'mad-event-mailer' )));
         }
 
         if ($action === 'save_event_order') {
@@ -760,12 +808,12 @@ class MADEVMA_Event_Mailer {
             foreach (array_values(array_filter($order)) as $index => $event_id) {
                 $wpdb->update(self::table('events'), ['sort_order'=>($index + 1) * 10], ['id'=>$event_id]);
             }
-            add_action('admin_notices', fn()=>self::notice('活动排序已保存。'));
+            add_action('admin_notices', fn()=>self::notice(__( 'Event order saved.', 'mad-event-mailer' )));
         }
 
         if ($action === 'save_subscriber') {
             self::save_subscriber_from_post();
-            add_action('admin_notices', fn()=>self::notice('收件人已保存。'));
+            add_action('admin_notices', fn()=>self::notice(__( 'Subscriber saved.', 'mad-event-mailer' )));
         }
 
         if ($action === 'export_subscribers_csv') {
@@ -774,14 +822,18 @@ class MADEVMA_Event_Mailer {
 
         if ($action === 'import_csv') {
             $count = self::import_csv(self::valid_uploaded_file('csv_file', ['csv']));
-            add_action('admin_notices', fn()=>self::notice("CSV 导入完成：$count 个收件人。"));
+            add_action('admin_notices', fn()=>self::notice(sprintf(
+                /* translators: %d: number of imported subscribers. */
+                _n( 'CSV import complete: %d subscriber.', 'CSV import complete: %d subscribers.', $count, 'mad-event-mailer' ),
+                $count
+            )));
         }
 
         if ($action === 'delete_subscriber') {
             $id = absint(wp_unslash($_POST['id']));
             $wpdb->delete(self::table('subscriber_events'), ['subscriber_id'=>$id]);
             $wpdb->delete(self::table('subscribers'), ['id'=>$id]);
-            add_action('admin_notices', fn()=>self::notice('收件人已删除。'));
+            add_action('admin_notices', fn()=>self::notice(__( 'Subscriber deleted.', 'mad-event-mailer' )));
         }
 
         if ($action === 'export_current_csv') {
@@ -796,7 +848,10 @@ class MADEVMA_Event_Mailer {
             $is_draft = $action === 'save_campaign_draft';
             $campaign_id = self::create_campaign_from_post($is_draft);
             if ($campaign_id && !$is_draft && sanitize_text_field(wp_unslash($_POST['send_mode'] ?? '')) === 'now') self::process_campaigns($campaign_id);
-            add_action('admin_notices', fn()=>self::notice($is_draft ? '发送任务草稿已保存。' : '发送任务已创建。系统会通过 WP-Cron 分批处理。'));
+            add_action('admin_notices', fn()=>self::notice($is_draft
+                ? __( 'Campaign draft saved.', 'mad-event-mailer' )
+                : __( 'Campaign created. The system will process it in batches through WP-Cron.', 'mad-event-mailer' )
+            ));
         }
     }
 
@@ -821,9 +876,9 @@ class MADEVMA_Event_Mailer {
     }
 
     private static function export_current_form_csv() {
-        if (!self::can_manage()) wp_die(esc_html(self::tr('权限不足。')));
+        if (!self::can_manage()) wp_die(esc_html(__( 'Permission denied.', 'mad-event-mailer' )));
         $template = self::current_template_from_post();
-        if (!$template) wp_die(esc_html(self::tr('请先选择模板。')));
+        if (!$template) wp_die(esc_html(__( 'Please select a template first.', 'mad-event-mailer' )));
         $posted_vars = self::posted_vars_for_preview();
         $scan = $template->html . ' ' . $template->subject . ' ' . implode(' ', array_map('strval', $posted_vars));
         $vars = array_values(array_diff(self::editable_vars(self::extract_vars($scan)), self::body_vars()));
@@ -839,19 +894,19 @@ class MADEVMA_Event_Mailer {
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
         echo self::csv_line($headers);
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
-        echo self::csv_line(array_merge(['example@example.com', self::tr('张三'), self::tr('活动名称或 slug')], array_fill(0, count($vars), '')));
+        echo self::csv_line(array_merge(['example@example.com', __( 'John Doe', 'mad-event-mailer' ), __( 'Event name or slug', 'mad-event-mailer' )], array_fill(0, count($vars), '')));
         exit;
     }
 
     private static function preview_current_form_static() {
-        if (!self::can_manage()) wp_die(esc_html(self::tr('权限不足。')));
+        if (!self::can_manage()) wp_die(esc_html(__( 'Permission denied.', 'mad-event-mailer' )));
         $template = self::current_template_from_post();
-        if (!$template) wp_die(esc_html(self::tr('请先选择模板。')));
+        if (!$template) wp_die(esc_html(__( 'Please select a template first.', 'mad-event-mailer' )));
         $html = (string)$template->html;
-        // 发送前预览只做结构预览：所有变量都保留为 {{变量名}}，不读取收件人或变量实际值，也不会发送邮件。
+        // The static preview preserves placeholders and does not load recipient data or send email.
         $include_unsub = !empty($_POST['include_unsubscribe']);
-        $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'zh'));
-        $unsub_lang = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'zh';
+        $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'en'));
+        $unsub_lang = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'en';
         $html = self::render_template(self::ensure_unsubscribe_notice($html, $unsub_lang, $include_unsub), []);
         while (ob_get_level()) { ob_end_clean(); }
         header('Content-Type: text/html; charset=UTF-8');
@@ -888,17 +943,19 @@ class MADEVMA_Event_Mailer {
 
     private static function normalize_subscription_language($lang) {
         $lang = strtolower((string)$lang);
-        return in_array($lang, ['zh','en'], true) ? $lang : 'zh';
+        return in_array($lang, ['zh','en'], true) ? $lang : 'en';
     }
 
     private static function request_subscription_language() {
         if (isset($_POST['subscription_language'])) return self::normalize_subscription_language(sanitize_text_field(wp_unslash($_POST['subscription_language'])));
         if (isset($_GET['madevma_lang'])) return self::normalize_subscription_language(sanitize_text_field(wp_unslash($_GET['madevma_lang'])));
-        return 'zh';
+        return 'en';
     }
 
     private static function language_label($lang) {
-        return self::normalize_subscription_language($lang) === 'en' ? '英文' : '中文';
+        return self::normalize_subscription_language($lang) === 'en'
+            ? __( 'English', 'mad-event-mailer' )
+            : __( 'Chinese', 'mad-event-mailer' );
     }
 
     private static function event_language_value($event_id, $lang) {
@@ -907,7 +964,7 @@ class MADEVMA_Event_Mailer {
 
     private static function parse_event_language_value($value) {
         $parts = explode('|', (string)$value);
-        return [absint($parts[0] ?? 0), self::normalize_subscription_language($parts[1] ?? 'zh')];
+        return [absint($parts[0] ?? 0), self::normalize_subscription_language($parts[1] ?? 'en')];
     }
 
     private static function event_language_label($event, $lang) {
@@ -967,14 +1024,14 @@ class MADEVMA_Event_Mailer {
 
     private static function get_register_page_url($lang = '') {
         $s = self::settings();
-        $lang = self::normalize_subscription_language($lang ?: 'zh');
+        $lang = self::normalize_subscription_language($lang ?: 'en');
         $key = $lang === 'en' ? 'register_page_url_en' : 'register_page_url_zh';
         if (!empty($s[$key])) return $s[$key];
         return !empty($s['register_page_url']) ? $s['register_page_url'] : home_url('/');
     }
 
     private static function get_unsubscribe_url($lang = '') {
-        $lang = self::normalize_subscription_language($lang ?: 'zh');
+        $lang = self::normalize_subscription_language($lang ?: 'en');
         return add_query_arg(['madevma_action'=>'unsubscribe', 'madevma_lang'=>$lang], self::get_register_page_url($lang));
     }
 
@@ -995,7 +1052,7 @@ class MADEVMA_Event_Mailer {
         if ($id <= 0) return false;
         global $wpdb;
         $name = (string) $wpdb->get_var( $wpdb->prepare( 'SELECT name FROM %i WHERE id=%d', self::table('templates'), $id ) );
-        return in_array($id, [1,2], true) || in_array($name, ['默认中文模板','默认英文模板','Default English Template'], true);
+        return in_array($id, [1,2], true) || in_array($name, ['默认中文模板','默认英文模板','Default Chinese Template','Default English Template'], true);
     }
 
     private static function strip_auto_unsubscribe_notice($html) {
@@ -1005,7 +1062,7 @@ class MADEVMA_Event_Mailer {
         return $html;
     }
 
-    private static function ensure_unsubscribe_notice($html, $lang='zh', $enabled=true) {
+    private static function ensure_unsubscribe_notice($html, $lang='en', $enabled=true) {
         $html = self::strip_auto_unsubscribe_notice($html);
         if (!$enabled) return $html;
         $lang = $lang === 'en' ? 'en' : 'zh';
@@ -1033,7 +1090,7 @@ class MADEVMA_Event_Mailer {
         return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC', self::table('templates') ) );
     }
 
-    private static function upsert_subscriber($email, $name, $event_ids, $source='manual', $merge_events=false, $language='zh') {
+    private static function upsert_subscriber($email, $name, $event_ids, $source='manual', $merge_events=false, $language='en') {
         $language = self::normalize_subscription_language($language);
         $event_lists = [];
         foreach ($event_ids as $eid) if ($eid) $event_lists[] = ['event_id'=>(int)$eid, 'language'=>$language];
@@ -1050,7 +1107,7 @@ class MADEVMA_Event_Mailer {
         if (!$merge_events) $wpdb->delete(self::table('subscriber_events'), ['subscriber_id'=>$id]);
         foreach ($event_lists as $list) {
             $event_id = absint($list['event_id'] ?? 0);
-            $language = self::normalize_subscription_language($list['language'] ?? 'zh');
+            $language = self::normalize_subscription_language($list['language'] ?? 'en');
             if ($event_id) $wpdb->replace(self::table('subscriber_events'), ['subscriber_id'=>$id, 'event_id'=>$event_id, 'language'=>$language], ['%d','%d','%s']);
         }
         return $id;
@@ -1066,7 +1123,7 @@ class MADEVMA_Event_Mailer {
         if ($language === 'en') {
             $html = $wpdb->get_var( $wpdb->prepare( 'SELECT html FROM %i WHERE name IN (%s,%s) ORDER BY id ASC LIMIT 1', $table, '默认英文模板', 'Default English Template' ) );
         } else {
-            $html = $wpdb->get_var( $wpdb->prepare( 'SELECT html FROM %i WHERE name=%s ORDER BY id ASC LIMIT 1', $table, '默认中文模板' ) );
+            $html = $wpdb->get_var( $wpdb->prepare( 'SELECT html FROM %i WHERE name IN (%s,%s) ORDER BY id ASC LIMIT 1', $table, '默认中文模板', 'Default Chinese Template' ) );
         }
         if ($html) return (string)$html;
         $file = plugin_dir_path(__FILE__) . ($language === 'en' ? 'default-template-en.html' : 'default-template-zh.html');
@@ -1222,10 +1279,10 @@ class MADEVMA_Event_Mailer {
         }
         foreach (self::title_vars() as $tv) $vars[$tv] = $subject;
         $vars['__include_unsubscribe'] = !empty($_POST['include_unsubscribe']) ? 1 : 0;
-        $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'zh'));
-        $vars['__unsubscribe_lang'] = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'zh';
+        $unsub_lang_value = sanitize_text_field(wp_unslash($_POST['unsubscribe_lang'] ?? 'en'));
+        $vars['__unsubscribe_lang'] = in_array($unsub_lang_value, ['zh','en'], true) ? $unsub_lang_value : 'en';
         $vars['__recipient_language'] = $recipient_language;
-        // 变量可能写在“正文内容”里，例如正文中包含 {{score}}，这里要一起扫描，方便 CSV 逐人填充。
+        // Variables can appear in body content, so scan it for per-recipient CSV fields as well.
         $scan_text = $template->html . ' ' . $template->subject . ' ' . implode(' ', array_map('strval', $vars));
         $all_vars = self::extract_vars($scan_text);
         foreach (self::editable_vars($all_vars) as $v) {
@@ -1315,7 +1372,7 @@ class MADEVMA_Event_Mailer {
                 $vars['title1'] = $vars['title1'] ?? $c->subject;
                 $subject = self::render_template($c->subject, $vars);
                 $include_unsub = !empty($vars['__include_unsubscribe']);
-                $unsub_lang = in_array(($vars['__unsubscribe_lang'] ?? 'zh'), ['zh','en'], true) ? $vars['__unsubscribe_lang'] : 'zh';
+                $unsub_lang = in_array(($vars['__unsubscribe_lang'] ?? 'en'), ['zh','en'], true) ? $vars['__unsubscribe_lang'] : 'en';
                 $vars['unsubscribe_url'] = self::get_unsubscribe_url($unsub_lang);
                 $body = self::render_template(self::ensure_unsubscribe_notice($template->html, $unsub_lang, $include_unsub), $vars);
                 $ok = wp_mail($log->email, $subject, $body, self::mail_headers());
@@ -1332,25 +1389,25 @@ class MADEVMA_Event_Mailer {
     private static function render_page_settings() {
         $s = self::settings();
         $sender_value = trim((string)($s['sender_name'] ?? ($s['from_name'] ?? '')));
-        self::wrap_start('SMTP 设置'); ?>
+        self::wrap_start(__( 'SMTP Settings', 'mad-event-mailer' )); ?>
         <form method="post"><?php self::nonce('save_settings'); ?>
-        <table class="form-table"><tr><th>SMTP 地址</th><td><input class="regular-text" name="host" value="<?php echo esc_attr($s['host']); ?>" placeholder="smtp.feishu.cn"></td></tr>
-        <tr><th>发送协议</th><td><select name="secure"><option value="ssl" <?php selected($s['secure'],'ssl'); ?>>ssl</option><option value="tls" <?php selected($s['secure'],'tls'); ?>>tls</option></select></td></tr>
-        <tr><th>端口</th><td><input name="port" value="<?php echo esc_attr($s['port']); ?>"></td></tr>
-        <tr><th>邮箱账号</th><td><input class="regular-text" name="username" value="<?php echo esc_attr($s['username']); ?>"></td></tr>
-        <tr><th>邮箱密码</th><td><input class="regular-text" type="password" name="password" value="<?php echo esc_attr($s['password']); ?>"></td></tr>
-        <tr><th>发件邮箱</th><td><input class="regular-text" name="from_email" value="<?php echo esc_attr($s['from_email']); ?>"></td></tr>
-        <tr><th>发件人姓名</th><td><input class="regular-text" name="sender_name" value="<?php echo esc_attr($sender_value); ?>" placeholder="MAD Producer 麦德工坊"><p class="description">邮件里显示的发件人名称。留空时发送邮件会使用 WordPress 站点名称。</p></td></tr>
-        <tr><th>回复地址</th><td><input class="regular-text" name="reply_to" value="<?php echo esc_attr($s['reply_to']); ?>"></td></tr>
-        <tr><th>每批发送数量</th><td><input type="number" name="batch_size" value="<?php echo esc_attr($s['batch_size']); ?>"> 封 / 每次定时任务</td></tr>
-        <tr><th>邮件 Logo 图片链接</th><td><input class="large-text" type="url" name="logo_url" value="<?php echo esc_attr($s['logo_url']); ?>" placeholder="https://example.com/logo.png"><p class="description">填写媒体库或其他允许使用的图片链接。模板通过 <code>{{logo_url}}</code> 变量读取；留空时不显示 Logo。</p></td></tr>
-        <tr><th>邮件底部 Icon 图片链接</th><td><input class="large-text" type="url" name="icon_url" value="<?php echo esc_attr($s['icon_url']); ?>" placeholder="https://example.com/icon.png"><p class="description">模板通过 <code>{{icon_url}}</code> 变量读取；留空时不显示底部图标。</p></td></tr>
-        <tr><th>订阅 / 退订页面固定链接</th><td><input class="regular-text" name="register_page_url" value="<?php echo esc_attr($s['register_page_url']); ?>" placeholder="https://example.com/mail-subscribe/"><p class="description">通用固定链接，未设置语言专属链接时作为备用。</p></td></tr>
-        <tr><th>中文订阅 / 退订固定链接</th><td><input class="regular-text" name="register_page_url_zh" value="<?php echo esc_attr($s['register_page_url_zh']); ?>" placeholder="https://example.com/mail-subscribe/"><p class="description">中文订阅确认、退订入口和邮件底部中文退订链接优先使用这个地址。</p></td></tr>
-        <tr><th>英文订阅 / 退订固定链接</th><td><input class="regular-text" name="register_page_url_en" value="<?php echo esc_attr($s['register_page_url_en']); ?>" placeholder="https://example.com/en/mail-subscribe/"><p class="description">English subscription confirmation, unsubscribe entry, and English footer links use this URL first.</p></td></tr>
-        <tr><th>默认退订按钮</th><td><label><input type="checkbox" name="default_unsubscribe_button" value="1" <?php checked(!empty($s['default_unsubscribe_button'])); ?>> 新建发送任务时默认在邮件底部添加“订阅管理 / 退订”按钮</label><p class="description">这个按钮由插件自动追加，不需要写在 HTML 模板或正文里。</p></td></tr>
-        <tr><th>默认退订按钮语言</th><td><select name="default_unsubscribe_lang"><option value="zh" <?php selected($s['default_unsubscribe_lang'] ?? 'zh','zh'); ?>>中文</option><option value="en" <?php selected($s['default_unsubscribe_lang'] ?? 'zh','en'); ?>>English</option></select></td></tr></table>
-        <?php submit_button('保存设置'); ?></form><?php self::wrap_end();
+        <table class="form-table"><tr><th><?php esc_html_e( 'SMTP Host', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="host" value="<?php echo esc_attr($s['host']); ?>" placeholder="smtp.example.com"></td></tr>
+        <tr><th><?php esc_html_e( 'Encryption', 'mad-event-mailer' ); ?></th><td><select name="secure"><option value="ssl" <?php selected($s['secure'],'ssl'); ?>>SSL</option><option value="tls" <?php selected($s['secure'],'tls'); ?>>TLS</option></select></td></tr>
+        <tr><th><?php esc_html_e( 'Port', 'mad-event-mailer' ); ?></th><td><input name="port" value="<?php echo esc_attr($s['port']); ?>"></td></tr>
+        <tr><th><?php esc_html_e( 'Email Account', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="username" value="<?php echo esc_attr($s['username']); ?>"></td></tr>
+        <tr><th><?php esc_html_e( 'Email Password', 'mad-event-mailer' ); ?></th><td><input class="regular-text" type="password" name="password" value="<?php echo esc_attr($s['password']); ?>"></td></tr>
+        <tr><th><?php esc_html_e( 'From Email', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="from_email" value="<?php echo esc_attr($s['from_email']); ?>"></td></tr>
+        <tr><th><?php esc_html_e( 'Sender Name', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="sender_name" value="<?php echo esc_attr($sender_value); ?>" placeholder="MAD Producer Studio"><p class="description"><?php esc_html_e( 'The sender name displayed in emails. When left empty, outgoing emails use the WordPress site name.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Reply-To Email', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="reply_to" value="<?php echo esc_attr($s['reply_to']); ?>"></td></tr>
+        <tr><th><?php esc_html_e( 'Batch Size', 'mad-event-mailer' ); ?></th><td><input type="number" name="batch_size" value="<?php echo esc_attr($s['batch_size']); ?>"> <?php esc_html_e( 'emails per scheduled run', 'mad-event-mailer' ); ?></td></tr>
+        <tr><th><?php esc_html_e( 'Email Logo URL', 'mad-event-mailer' ); ?></th><td><input class="large-text" type="url" name="logo_url" value="<?php echo esc_attr($s['logo_url']); ?>" placeholder="https://example.com/logo.png"><p class="description"><?php esc_html_e( 'Enter an image URL from the Media Library or another permitted source. Templates use the {{logo_url}} variable; leave it empty to hide the logo.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Email Footer Icon URL', 'mad-event-mailer' ); ?></th><td><input class="large-text" type="url" name="icon_url" value="<?php echo esc_attr($s['icon_url']); ?>" placeholder="https://example.com/icon.png"><p class="description"><?php esc_html_e( 'Templates use the {{icon_url}} variable; leave it empty to hide the footer icon.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Subscription Page URL', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="register_page_url" value="<?php echo esc_attr($s['register_page_url']); ?>" placeholder="https://example.com/mail-subscribe/"><p class="description"><?php esc_html_e( 'Fallback URL used when no language-specific subscription URL is configured.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Chinese Subscription Page URL', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="register_page_url_zh" value="<?php echo esc_attr($s['register_page_url_zh']); ?>" placeholder="https://example.com/zh/mail-subscribe/"><p class="description"><?php esc_html_e( 'Chinese confirmation, unsubscribe, and footer links use this URL first.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'English Subscription Page URL', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="register_page_url_en" value="<?php echo esc_attr($s['register_page_url_en']); ?>" placeholder="https://example.com/mail-subscribe/"><p class="description"><?php esc_html_e( 'English confirmation, unsubscribe, and footer links use this URL first.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Default Unsubscribe Button', 'mad-event-mailer' ); ?></th><td><label><input type="checkbox" name="default_unsubscribe_button" value="1" <?php checked(!empty($s['default_unsubscribe_button'])); ?>> <?php esc_html_e( 'Add a Manage Subscription / Unsubscribe button to new campaigns by default', 'mad-event-mailer' ); ?></label><p class="description"><?php esc_html_e( 'The plugin appends this button automatically; do not add it to the HTML template or message body.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Default Unsubscribe Language', 'mad-event-mailer' ); ?></th><td><select name="default_unsubscribe_lang"><option value="zh" <?php selected($s['default_unsubscribe_lang'] ?? 'en','zh'); ?>><?php esc_html_e( 'Chinese', 'mad-event-mailer' ); ?></option><option value="en" <?php selected($s['default_unsubscribe_lang'] ?? 'en','en'); ?>><?php esc_html_e( 'English', 'mad-event-mailer' ); ?></option></select></td></tr></table>
+        <?php submit_button(__( 'Save Settings', 'mad-event-mailer' )); ?></form><?php self::wrap_end();
     }
 
     public static function page_templates() { self::render_admin_page('render_page_templates'); }
@@ -1358,46 +1415,46 @@ class MADEVMA_Event_Mailer {
         global $wpdb;
         $edit = null;
         if (!empty($_GET['edit'])) $edit = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), absint(wp_unslash($_GET['edit'])) ) );
-        self::wrap_start('邮件模板');
+        self::wrap_start(__( 'Email Templates', 'mad-event-mailer' ));
         $show_query = !empty($query_result);
         ?>
-        <div class="notice notice-info" style="padding:12px 14px"><p><strong>模板写法规则：</strong></p><p>变量统一使用 <code>{{变量名}}</code>，只能包含英文、数字、下划线或短横线。<code>{{title}}</code> / <code>{{title1}}</code> 会自动使用发送页面的邮件主题；<code>{{name}}</code> / <code>{{name1}}</code> 会自动使用收件人姓名；<code>{{email}}</code> 自动使用收件人邮箱；<code>{{unsubscribe_url}}</code> 自动生成退订链接。</p><p>通用模板建议保留一个正文插槽：<code>{{message1}}</code> 或 <code>{{message}}</code>。发送邮件时可以直接用富文本编辑器编辑正文内容，正文里还可以继续写 <code>{{score}}</code>、<code>{{rank}}</code> 这种变量；上传 CSV 时同名列会覆盖每个收件人的值。</p></div>
-        <h2>基于通用模板快速创建</h2>
+        <div class="notice notice-info" style="padding:12px 14px"><p><strong><?php esc_html_e( 'Template Syntax Rules:', 'mad-event-mailer' ); ?></strong></p><p><?php esc_html_e( 'Variables use the {{variable_name}} format and may contain letters, numbers, underscores, or hyphens only. {{title}} / {{title1}} use the campaign subject; {{name}} / {{name1}} use the recipient name; {{email}} uses the recipient email; and {{unsubscribe_url}} generates the unsubscribe URL.', 'mad-event-mailer' ); ?></p><p><?php esc_html_e( 'General templates should keep a {{message1}} or {{message}} body slot. You can add variables such as {{score}} and {{rank}} to the body; matching CSV columns override their values for each recipient.', 'mad-event-mailer' ); ?></p></div>
+        <h2><?php esc_html_e( 'Quick Create from General Template', 'mad-event-mailer' ); ?></h2>
         <form method="post"><?php self::nonce('save_quick_template'); ?>
-        <table class="form-table"><tr><th>选择通用模板</th><td><select name="base_template_id" required><?php foreach(self::get_templates() as $bt): ?><option value="<?php echo (int)$bt->id; ?>"><?php echo esc_html($bt->name); ?></option><?php endforeach; ?></select><p class="description">会把下面的正文内容放进该模板的 <code>{{message1}}</code> 或 <code>{{message}}</code> 位置，并保存为一个新的完整模板。</p></td></tr>
-        <tr><th>新模板名称</th><td><input class="regular-text" name="quick_name" required placeholder="例如：IFT IC #6 分数通知"></td></tr>
-        <tr><th>默认邮件主题</th><td><input class="regular-text" name="quick_subject" value="{{title1}}"><p class="description">一般保持 <code>{{title1}}</code> 即可，发送时再填写真实标题。</p></td></tr>
-        <tr><th>正文内容</th><td><?php wp_editor('', 'madevma_quick_body', ['textarea_name'=>'quick_body','textarea_rows'=>10,'media_buttons'=>false,'teeny'=>false,'quicktags'=>true]); ?><p class="description">这里可以写富文本，也可以插入变量，例如 <code>{{score}}</code>、<code>{{comment}}</code>。创建后这些变量会出现在发送页和 CSV 模板里。</p></td></tr></table>
-        <?php submit_button('基于通用模板创建'); ?></form><hr>
-        <h2><?php echo $edit ? '编辑模板' : '新增模板'; ?></h2>
+        <table class="form-table"><tr><th><?php esc_html_e( 'General Template', 'mad-event-mailer' ); ?></th><td><select name="base_template_id" required><?php foreach(self::get_templates() as $bt): ?><option value="<?php echo (int)$bt->id; ?>"><?php echo esc_html($bt->name); ?></option><?php endforeach; ?></select><p class="description"><?php esc_html_e( 'The body below is inserted into the template’s {{message1}} or {{message}} slot and saved as a new complete template.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'New Template Name', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="quick_name" required placeholder="<?php esc_attr_e( 'Example: Event score notification', 'mad-event-mailer' ); ?>"></td></tr>
+        <tr><th><?php esc_html_e( 'Default Email Subject', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="quick_subject" value="{{title1}}"><p class="description"><?php esc_html_e( 'Keep {{title1}} here in most cases, then enter the actual subject when sending.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Body Content', 'mad-event-mailer' ); ?></th><td><?php wp_editor('', 'madevma_quick_body', ['textarea_name'=>'quick_body','textarea_rows'=>10,'media_buttons'=>false,'teeny'=>false,'quicktags'=>true]); ?><p class="description"><?php esc_html_e( 'Use rich text and variables such as {{score}} or {{comment}}. These variables will appear on the send page and in generated CSV templates.', 'mad-event-mailer' ); ?></p></td></tr></table>
+        <?php submit_button(__( 'Create from General Template', 'mad-event-mailer' )); ?></form><hr>
+        <h2><?php echo esc_html($edit ? __( 'Edit Template', 'mad-event-mailer' ) : __( 'Add Template', 'mad-event-mailer' )); ?></h2>
         <form method="post" enctype="multipart/form-data"><?php self::nonce('save_template'); ?><input type="hidden" name="id" value="<?php echo esc_attr($edit->id ?? 0); ?>">
-        <table class="form-table"><tr><th>模板名称</th><td><input class="regular-text" name="name" required value="<?php echo esc_attr($edit->name ?? ''); ?>"></td></tr>
-        <tr><th>默认邮件主题</th><td><input class="regular-text" name="subject" value="<?php echo esc_attr($edit->subject ?? ''); ?>"><p class="description">建议使用 {{title1}} 或直接填写固定标题。发送时的“邮件主题”会自动填充 {{title}} / {{title1}}。</p></td></tr>
-        <tr><th>邮件摘要</th><td><textarea class="large-text" name="summary" rows="3"><?php echo esc_textarea($edit->summary ?? ''); ?></textarea></td></tr>
-        <tr><th>上传 HTML</th><td><input type="file" name="html_file" accept=".html,.htm"><p class="description">也可以在下面直接粘贴 HTML。变量格式为 {{变量名}}。{{name}} / {{name1}} 会自动使用收件人姓名，不需要手动填写。</p></td></tr>
+        <table class="form-table"><tr><th><?php esc_html_e( 'Template Name', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="name" required value="<?php echo esc_attr($edit->name ?? ''); ?>"></td></tr>
+        <tr><th><?php esc_html_e( 'Default Email Subject', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="subject" value="<?php echo esc_attr($edit->subject ?? ''); ?>"><p class="description"><?php esc_html_e( 'Use {{title1}} or enter a fixed subject. The campaign subject fills {{title}} and {{title1}} when sending.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Email Summary', 'mad-event-mailer' ); ?></th><td><textarea class="large-text" name="summary" rows="3"><?php echo esc_textarea($edit->summary ?? ''); ?></textarea></td></tr>
+        <tr><th><?php esc_html_e( 'Upload HTML', 'mad-event-mailer' ); ?></th><td><input type="file" name="html_file" accept=".html,.htm"><p class="description"><?php esc_html_e( 'You can also paste HTML below. Variables use the {{variable_name}} format. {{name}} and {{name1}} automatically use the recipient name.', 'mad-event-mailer' ); ?></p></td></tr>
         <tr><th>HTML</th><td><textarea class="large-text code" name="html" rows="18"><?php echo esc_textarea($edit->html ?? ''); ?></textarea></td></tr></table>
-        <?php submit_button('保存模板'); ?></form>
-        <h2>已保存模板</h2><table class="widefat striped"><thead><tr><th>ID</th><th>模板名称</th><th>邮件主题</th><th>变量</th><th>操作</th></tr></thead><tbody><?php foreach (self::get_templates() as $t): $vars=self::extract_vars($t->html.' '.$t->subject); ?>
-        <tr><td><?php echo (int)$t->id; ?></td><td><?php echo esc_html($t->name); ?><?php if (self::is_builtin_template($t->id)) echo ' <span class="description">通用模板</span>'; ?></td><td><?php echo esc_html($t->subject); ?></td><td><?php echo esc_html(implode(', ', $vars)); ?></td><td class="madevma-mailer-template-actions"><a href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-templates&edit='.$t->id)); ?>">编辑</a><button type="button" class="button-link madevma-mailer-template-preview" data-url="<?php echo esc_url(self::preview_url($t->id)); ?>">预览</button><a href="<?php echo esc_url(self::export_url($t->id)); ?>">导出收件人模板</a><?php if (!self::is_builtin_template($t->id)): ?><form method="post" data-confirm-delete="确定删除吗？"><?php self::nonce('delete_template'); ?><input type="hidden" name="id" value="<?php echo (int)$t->id; ?>"><button class="button-link-delete">删除</button></form><?php else: ?><span class="description">不可删除</span><?php endif; ?></td></tr>
+        <?php submit_button(__( 'Save Template', 'mad-event-mailer' )); ?></form>
+        <h2><?php esc_html_e( 'Saved Templates', 'mad-event-mailer' ); ?></h2><table class="widefat striped"><thead><tr><th>ID</th><th><?php esc_html_e( 'Template Name', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Email Subject', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Variables', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Actions', 'mad-event-mailer' ); ?></th></tr></thead><tbody><?php foreach (self::get_templates() as $t): $vars=self::extract_vars($t->html.' '.$t->subject); ?>
+        <tr><td><?php echo (int)$t->id; ?></td><td><?php echo esc_html($t->name); ?><?php if (self::is_builtin_template($t->id)) echo ' <span class="description">'.esc_html__( 'General Template', 'mad-event-mailer' ).'</span>'; ?></td><td><?php echo esc_html($t->subject); ?></td><td><?php echo esc_html(implode(', ', $vars)); ?></td><td class="madevma-mailer-template-actions"><a href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-templates&edit='.$t->id)); ?>"><?php esc_html_e( 'Edit', 'mad-event-mailer' ); ?></a><button type="button" class="button-link madevma-mailer-template-preview" data-url="<?php echo esc_url(self::preview_url($t->id)); ?>"><?php esc_html_e( 'Preview', 'mad-event-mailer' ); ?></button><a href="<?php echo esc_url(self::export_url($t->id)); ?>"><?php esc_html_e( 'Export Recipient Template', 'mad-event-mailer' ); ?></a><?php if (!self::is_builtin_template($t->id)): ?><form method="post" data-confirm-delete="<?php esc_attr_e( 'Are you sure you want to delete this?', 'mad-event-mailer' ); ?>"><?php self::nonce('delete_template'); ?><input type="hidden" name="id" value="<?php echo (int)$t->id; ?>"><button class="button-link-delete"><?php esc_html_e( 'Delete', 'mad-event-mailer' ); ?></button></form><?php else: ?><span class="description"><?php esc_html_e( 'Not Deletable', 'mad-event-mailer' ); ?></span><?php endif; ?></td></tr>
         <?php endforeach; ?></tbody></table>
-        <div class="madevma-mailer-modal" id="madevmaTemplateModal"><div class="madevma-mailer-modal-box"><div class="madevma-mailer-modal-head"><strong>模板预览</strong><button type="button" class="button" id="madevmaTemplateClose">关闭</button></div><iframe id="madevmaTemplateFrame"></iframe></div></div>
+        <div class="madevma-mailer-modal" id="madevmaTemplateModal"><div class="madevma-mailer-modal-box"><div class="madevma-mailer-modal-head"><strong><?php esc_html_e( 'Template Preview', 'mad-event-mailer' ); ?></strong><button type="button" class="button" id="madevmaTemplateClose"><?php esc_html_e( 'Close', 'mad-event-mailer' ); ?></button></div><iframe id="madevmaTemplateFrame"></iframe></div></div>
         <?php self::wrap_end();
     }
 
     public static function page_events() { self::render_admin_page('render_page_events'); }
     private static function render_page_events() {
         global $wpdb; $edit=null; if (!empty($_GET['edit'])) $edit=$wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('events'), absint(wp_unslash($_GET['edit'])) ) );
-        self::wrap_start('活动管理'); ?>
+        self::wrap_start(__( 'Events', 'mad-event-mailer' )); ?>
         <form method="post"><?php self::nonce('save_event'); ?><input type="hidden" name="id" value="<?php echo esc_attr($edit->id ?? 0); ?>">
-        <table class="form-table"><tr><th>活动名称</th><td><input class="regular-text" name="name" required value="<?php echo esc_attr($edit->name ?? ''); ?>"></td></tr>
-        <tr><th>别名 / Slug</th><td><input class="regular-text" name="slug" value="<?php echo esc_attr($edit->slug ?? ''); ?>"></td></tr>
-        <tr><th>活动描述</th><td><textarea class="large-text" name="description" rows="3"><?php echo esc_textarea($edit->description ?? ''); ?></textarea></td></tr>
-        <tr><th>启用</th><td><label><input type="checkbox" name="active" <?php checked(($edit->active ?? 1), 1); ?>> 在前台注册表单中显示</label></td></tr></table><?php submit_button('保存活动'); ?></form>
+        <table class="form-table"><tr><th><?php esc_html_e( 'Event Name', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="name" required value="<?php echo esc_attr($edit->name ?? ''); ?>"></td></tr>
+        <tr><th><?php esc_html_e( 'Slug', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="slug" value="<?php echo esc_attr($edit->slug ?? ''); ?>"></td></tr>
+        <tr><th><?php esc_html_e( 'Event Description', 'mad-event-mailer' ); ?></th><td><textarea class="large-text" name="description" rows="3"><?php echo esc_textarea($edit->description ?? ''); ?></textarea></td></tr>
+        <tr><th><?php esc_html_e( 'Enabled', 'mad-event-mailer' ); ?></th><td><label><input type="checkbox" name="active" <?php checked(($edit->active ?? 1), 1); ?>> <?php esc_html_e( 'Show in the public subscription form', 'mad-event-mailer' ); ?></label></td></tr></table><?php submit_button(__( 'Save Event', 'mad-event-mailer' )); ?></form>
         <form method="post" id="madevma-mailer-event-order-form"><?php self::nonce('save_event_order'); ?>
-        <table class="widefat striped"><thead><tr><th style="width:70px">排序</th><th>ID</th><th>活动名称</th><th>别名 / Slug</th><th>中文收件人</th><th>英文收件人</th><th>启用</th><th>操作</th></tr></thead><tbody id="madevma-mailer-event-order"><?php foreach (self::get_events(false) as $e): $zh_count=(int)$wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM %i WHERE event_id=%d AND language=%s', self::table('subscriber_events'), $e->id, 'zh')); $en_count=(int)$wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM %i WHERE event_id=%d AND language=%s', self::table('subscriber_events'), $e->id, 'en')); ?>
-        <tr draggable="true"><td class="madevma-mailer-drag-handle">↕ 拖拽<input type="hidden" name="event_order[]" value="<?php echo (int)$e->id; ?>"></td><td><?php echo (int)$e->id; ?></td><td><?php echo esc_html($e->name); ?></td><td><?php echo esc_html($e->slug); ?></td><td><?php echo esc_html((string)$zh_count); ?></td><td><?php echo esc_html((string)$en_count); ?></td><td><?php echo $e->active ? '是' : '否'; ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-events&edit='.$e->id)); ?>">编辑</a> <button class="button-link-delete" type="submit" form="madevma-mailer-delete-event-<?php echo (int)$e->id; ?>" data-confirm="确定删除这个活动吗？">删除</button></td></tr>
+        <table class="widefat striped"><thead><tr><th style="width:90px"><?php esc_html_e( 'Order', 'mad-event-mailer' ); ?></th><th>ID</th><th><?php esc_html_e( 'Event Name', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Slug', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Chinese Subscribers', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'English Subscribers', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Enabled', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Actions', 'mad-event-mailer' ); ?></th></tr></thead><tbody id="madevma-mailer-event-order"><?php foreach (self::get_events(false) as $e): $zh_count=(int)$wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM %i WHERE event_id=%d AND language=%s', self::table('subscriber_events'), $e->id, 'zh')); $en_count=(int)$wpdb->get_var($wpdb->prepare('SELECT COUNT(*) FROM %i WHERE event_id=%d AND language=%s', self::table('subscriber_events'), $e->id, 'en')); ?>
+        <tr draggable="true"><td class="madevma-mailer-drag-handle">↕ <?php esc_html_e( 'Drag', 'mad-event-mailer' ); ?><input type="hidden" name="event_order[]" value="<?php echo (int)$e->id; ?>"></td><td><?php echo (int)$e->id; ?></td><td><?php echo esc_html($e->name); ?></td><td><?php echo esc_html($e->slug); ?></td><td><?php echo esc_html((string)$zh_count); ?></td><td><?php echo esc_html((string)$en_count); ?></td><td><?php echo esc_html($e->active ? __( 'Yes', 'mad-event-mailer' ) : __( 'No', 'mad-event-mailer' )); ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-events&edit='.$e->id)); ?>"><?php esc_html_e( 'Edit', 'mad-event-mailer' ); ?></a> <button class="button-link-delete" type="submit" form="madevma-mailer-delete-event-<?php echo (int)$e->id; ?>" data-confirm="<?php esc_attr_e( 'Are you sure you want to delete this event?', 'mad-event-mailer' ); ?>"><?php esc_html_e( 'Delete', 'mad-event-mailer' ); ?></button></td></tr>
         <?php endforeach; ?></tbody></table>
-        <?php submit_button('保存活动排序', 'secondary'); ?></form>
+        <?php submit_button(__( 'Save Event Order', 'mad-event-mailer' ), 'secondary'); ?></form>
         <?php foreach (self::get_events(false) as $e): ?><form method="post" id="madevma-mailer-delete-event-<?php echo (int)$e->id; ?>" style="display:none"><?php self::nonce('delete_event'); ?><input type="hidden" name="id" value="<?php echo (int)$e->id; ?>"></form><?php endforeach; ?>
         <?php self::wrap_end();
     }
@@ -1412,21 +1469,25 @@ class MADEVMA_Event_Mailer {
         $filter_value = sanitize_text_field(wp_unslash($_GET['subscriber_filter'] ?? '0'));
         $rows = self::get_filtered_subscribers($filter_value, 200);
         $total = count($rows);
-        self::wrap_start('收件人'); ?>
-        <p>支持的 CSV 列名：<code>email,name,events</code>，也兼容 <code>邮箱,姓名,活动</code>。活动需填写后台收件人列表名称，例如 <code>站点公告 中文</code> 或 <code>站点公告 英文</code>，多个列表用逗号分隔。</p>
-        <form method="post" enctype="multipart/form-data"><?php self::nonce('import_csv'); ?><input type="file" name="csv_file" accept=".csv" required> 默认活动： <select name="default_event"><option value="0">不指定</option><?php foreach($events as $e) foreach(['zh','en'] as $list_lang) echo '<option value="'.esc_attr(self::event_language_value($e->id,$list_lang)).'">'.esc_html(self::event_language_label($e,$list_lang)).'</option>'; ?></select> <?php submit_button('导入 CSV', 'secondary', 'submit', false); ?></form>
-        <h2><?php echo $edit ? '编辑收件人' : '添加收件人'; ?></h2>
+        self::wrap_start(__( 'Subscribers', 'mad-event-mailer' )); ?>
+        <p><?php esc_html_e( 'Supported CSV columns: email, name, and events. The legacy Chinese headers are also accepted. Enter recipient-list names in the events column and separate multiple lists with commas.', 'mad-event-mailer' ); ?></p>
+        <form method="post" enctype="multipart/form-data"><?php self::nonce('import_csv'); ?><input type="file" name="csv_file" accept=".csv" required> <?php esc_html_e( 'Default Event:', 'mad-event-mailer' ); ?> <select name="default_event"><option value="0"><?php esc_html_e( 'None', 'mad-event-mailer' ); ?></option><?php foreach($events as $e) foreach(['zh','en'] as $list_lang) echo '<option value="'.esc_attr(self::event_language_value($e->id,$list_lang)).'">'.esc_html(self::event_language_label($e,$list_lang)).'</option>'; ?></select> <?php submit_button(__( 'Import CSV', 'mad-event-mailer' ), 'secondary', 'submit', false); ?></form>
+        <h2><?php echo esc_html($edit ? __( 'Edit Subscriber', 'mad-event-mailer' ) : __( 'Add Subscriber', 'mad-event-mailer' )); ?></h2>
         <form method="post"><?php self::nonce('save_subscriber'); ?><input type="hidden" name="id" value="<?php echo esc_attr($edit->id ?? 0); ?>">
-            <p><input name="email" placeholder="email@example.com" required value="<?php echo esc_attr($edit->email ?? ''); ?>"> <input name="name" placeholder="姓名" value="<?php echo esc_attr($edit->name ?? ''); ?>"> <select name="status"><option value="subscribed" <?php selected($edit->status ?? 'subscribed','subscribed'); ?>>已订阅</option><option value="unsubscribed" <?php selected($edit->status ?? 'subscribed','unsubscribed'); ?>>已退订</option></select></p>
+            <p><input name="email" placeholder="email@example.com" required value="<?php echo esc_attr($edit->email ?? ''); ?>"> <input name="name" placeholder="<?php esc_attr_e( 'Name', 'mad-event-mailer' ); ?>" value="<?php echo esc_attr($edit->name ?? ''); ?>"> <select name="status"><option value="subscribed" <?php selected($edit->status ?? 'subscribed','subscribed'); ?>><?php esc_html_e( 'Subscribed', 'mad-event-mailer' ); ?></option><option value="unsubscribed" <?php selected($edit->status ?? 'subscribed','unsubscribed'); ?>><?php esc_html_e( 'Unsubscribed', 'mad-event-mailer' ); ?></option></select></p>
             <p><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): $value=self::event_language_value($e->id,$list_lang); ?><label style="margin-right:12px"><input type="checkbox" name="event_lists[]" value="<?php echo esc_attr($value); ?>" <?php checked(in_array($value, $selected_lists, true)); ?>> <?php echo esc_html(self::event_language_label($e,$list_lang)); ?></label><?php endforeach; endforeach; ?></p>
-            <?php submit_button($edit ? '更新收件人' : '保存', 'secondary', 'submit', false); ?> <?php if($edit): ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-subscribers')); ?>">取消编辑</a><?php endif; ?>
+            <?php submit_button($edit ? __( 'Update Subscriber', 'mad-event-mailer' ) : __( 'Save', 'mad-event-mailer' ), 'secondary', 'submit', false); ?> <?php if($edit): ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-subscribers')); ?>"><?php esc_html_e( 'Cancel Editing', 'mad-event-mailer' ); ?></a><?php endif; ?>
         </form>
-        <h2>收件人列表</h2>
-        <form method="get" style="margin:12px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input type="hidden" name="page" value="madevma-mailer-subscribers"><label>按活动语言筛选 <select name="subscriber_filter"><option value="0">全部收件人</option><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): $value=self::event_language_value($e->id,$list_lang); ?><option value="<?php echo esc_attr($value); ?>" <?php selected($filter_value,$value); ?>><?php echo esc_html(self::event_language_label($e,$list_lang)); ?></option><?php endforeach; endforeach; ?></select></label><?php submit_button('筛选', 'secondary', 'submit', false); ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-subscribers')); ?>">重置</a></form>
-        <form method="post" style="margin:0 0 12px"><?php self::nonce('export_subscribers_csv'); ?><input type="hidden" name="subscriber_filter" value="<?php echo esc_attr($filter_value); ?>"><?php submit_button('导出当前筛选 CSV', 'secondary', 'submit', false); ?> <span class="description">当前筛选共 <?php echo (int)$total; ?> 个收件人。</span></form>
-        <table class="widefat striped"><thead><tr><th>邮箱</th><th>姓名</th><th>订阅活动</th><th>状态</th><th>操作</th></tr></thead><tbody><?php foreach($rows as $r): $names=self::subscriber_event_labels($r->id); ?>
-        <tr><td><?php echo esc_html($r->email); ?></td><td><?php echo esc_html($r->name); ?></td><td><?php echo esc_html(implode(', ', $names)); ?></td><td><?php echo esc_html(self::status_label($r->status)); ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-subscribers&edit='.$r->id)); ?>">编辑</a> <form method="post" style="display:inline" data-confirm-delete="确定删除这个收件人吗？"><?php self::nonce('delete_subscriber'); ?><input type="hidden" name="id" value="<?php echo (int)$r->id; ?>"><button class="button-link-delete">删除</button></form></td></tr>
-        <?php endforeach; if(empty($rows)): ?><tr><td colspan="5">没有找到收件人。</td></tr><?php endif; ?></tbody></table><?php self::wrap_end();
+        <h2><?php esc_html_e( 'Subscriber List', 'mad-event-mailer' ); ?></h2>
+        <form method="get" style="margin:12px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input type="hidden" name="page" value="madevma-mailer-subscribers"><label><?php esc_html_e( 'Filter by event language', 'mad-event-mailer' ); ?> <select name="subscriber_filter"><option value="0"><?php esc_html_e( 'All Subscribers', 'mad-event-mailer' ); ?></option><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): $value=self::event_language_value($e->id,$list_lang); ?><option value="<?php echo esc_attr($value); ?>" <?php selected($filter_value,$value); ?>><?php echo esc_html(self::event_language_label($e,$list_lang)); ?></option><?php endforeach; endforeach; ?></select></label><?php submit_button(__( 'Filter', 'mad-event-mailer' ), 'secondary', 'submit', false); ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-subscribers')); ?>"><?php esc_html_e( 'Reset', 'mad-event-mailer' ); ?></a></form>
+        <form method="post" style="margin:0 0 12px"><?php self::nonce('export_subscribers_csv'); ?><input type="hidden" name="subscriber_filter" value="<?php echo esc_attr($filter_value); ?>"><?php submit_button(__( 'Export Filtered CSV', 'mad-event-mailer' ), 'secondary', 'submit', false); ?> <span class="description"><?php echo esc_html(sprintf(
+            /* translators: %d: number of subscribers in the current filter. */
+            _n( '%d subscriber in the current filter.', '%d subscribers in the current filter.', $total, 'mad-event-mailer' ),
+            $total
+        )); ?></span></form>
+        <table class="widefat striped"><thead><tr><th><?php esc_html_e( 'Email', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Name', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Subscribed Events', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Status', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Actions', 'mad-event-mailer' ); ?></th></tr></thead><tbody><?php foreach($rows as $r): $names=self::subscriber_event_labels($r->id); ?>
+        <tr><td><?php echo esc_html($r->email); ?></td><td><?php echo esc_html($r->name); ?></td><td><?php echo esc_html(implode(', ', $names)); ?></td><td><?php echo esc_html(self::status_label($r->status)); ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-subscribers&edit='.$r->id)); ?>"><?php esc_html_e( 'Edit', 'mad-event-mailer' ); ?></a> <form method="post" style="display:inline" data-confirm-delete="<?php esc_attr_e( 'Are you sure you want to delete this subscriber?', 'mad-event-mailer' ); ?>"><?php self::nonce('delete_subscriber'); ?><input type="hidden" name="id" value="<?php echo (int)$r->id; ?>"><button class="button-link-delete"><?php esc_html_e( 'Delete', 'mad-event-mailer' ); ?></button></form></td></tr>
+        <?php endforeach; if(empty($rows)): ?><tr><td colspan="5"><?php esc_html_e( 'No subscribers found.', 'mad-event-mailer' ); ?></td></tr><?php endif; ?></tbody></table><?php self::wrap_end();
     }
 
     public static function page_send() { self::render_admin_page('render_page_send'); }
@@ -1448,39 +1509,47 @@ class MADEVMA_Event_Mailer {
         $editable_vars = $selected_template ? array_values(array_diff(self::editable_vars($template_vars), self::body_vars())) : [];
         $initial_subject = $loaded_campaign ? $loaded_campaign->subject : '';
         $initial_unsub = array_key_exists('__include_unsubscribe', $loaded_vars) ? !empty($loaded_vars['__include_unsubscribe']) : !empty($settings['default_unsubscribe_button']);
-        $initial_unsub_lang = in_array(($loaded_vars['__unsubscribe_lang'] ?? ($settings['default_unsubscribe_lang'] ?? 'zh')), ['zh','en'], true) ? ($loaded_vars['__unsubscribe_lang'] ?? ($settings['default_unsubscribe_lang'] ?? 'zh')) : 'zh';
+        $initial_unsub_lang = in_array(($loaded_vars['__unsubscribe_lang'] ?? ($settings['default_unsubscribe_lang'] ?? 'en')), ['zh','en'], true) ? ($loaded_vars['__unsubscribe_lang'] ?? ($settings['default_unsubscribe_lang'] ?? 'en')) : 'en';
         if (!$initial_subject && $selected_template && !preg_match('/^\s*{{\s*title1?\s*}}\s*$/', (string)$selected_template->subject)) $initial_subject = $selected_template->subject;
-        self::wrap_start('发送 / 定时发送邮件');
-        if ($loaded_campaign) self::notice('已载入发送任务 #'.$loaded_campaign->id.' 的设置，你可以修改后重新保存草稿或创建新的发送任务。', 'info');
+        self::wrap_start(__( 'Send / Schedule Email', 'mad-event-mailer' ));
+        if ($loaded_campaign) self::notice(sprintf(
+            /* translators: %d: campaign ID. */
+            __( 'Loaded campaign #%d settings. You can edit them and save another draft or create a new campaign.', 'mad-event-mailer' ),
+            $loaded_campaign->id
+        ), 'info');
         $show_query = !empty($query_result);
         ?>
         <form method="get" class="madevma-mailer-card" style="margin-bottom:14px">
             <input type="hidden" name="page" value="madevma-mailer">
             <?php if ($loaded_campaign): ?><input type="hidden" name="campaign_id" value="<?php echo (int)$loaded_campaign->id; ?>"><?php endif; ?>
-            <table class="form-table"><tr><th>模板选择</th><td>
+            <table class="form-table"><tr><th><?php esc_html_e( 'Template', 'mad-event-mailer' ); ?></th><td>
                 <select name="template_id" id="template_id_switch" required>
-                    <option value="">请选择...</option>
+                    <option value=""><?php esc_html_e( 'Select...', 'mad-event-mailer' ); ?></option>
                     <?php foreach($templates as $t): ?><option value="<?php echo (int)$t->id; ?>" <?php selected($selected_id, (int)$t->id); ?>><?php echo esc_html($t->name); ?></option><?php endforeach; ?>
                 </select>
-                <button type="submit" class="button button-secondary">切换模板</button>
-                <p class="madevma-mailer-help">选择模板后点击“切换模板”，页面会刷新并重新生成正文插槽与变量填写框。这个按钮不会发送邮件。</p>
+                <button type="submit" class="button button-secondary"><?php esc_html_e( 'Switch Template', 'mad-event-mailer' ); ?></button>
+                <p class="madevma-mailer-help"><?php esc_html_e( 'Select a template and click Switch Template to rebuild the body slots and variable fields. This button does not send email.', 'mad-event-mailer' ); ?></p>
             </td></tr></table>
         </form>
         <form method="post" id="madevma-mailer-send" enctype="multipart/form-data" class="madevma-mailer-card"><?php self::nonce('create_campaign'); ?>
         <input type="hidden" name="template_id" id="template_id" value="<?php echo (int)$selected_id; ?>">
-        <table class="form-table"><tr><th>当前模板</th><td><strong><?php echo $selected_template ? esc_html($selected_template->name) : '未选择模板'; ?></strong> <button type="submit" class="button" name="madevma_action" value="export_current_csv">导出当前内容的收件人 CSV</button><p class="madevma-mailer-help">如需更换模板，请使用上方“模板选择”区域切换。导出 CSV 会按照当前模板和当前正文内容生成字段。</p></td></tr>
-        <tr><th>邮件主题</th><td><input class="regular-text" name="subject" id="subject" required value="<?php echo esc_attr($initial_subject); ?>"><p class="madevma-mailer-help">这里会自动填充模板中的 {{title}} / {{title1}}，不需要再单独设置 title 变量。</p></td></tr>
-        <tr><th>收件人来源</th><td><label><input type="radio" name="recipient_mode" value="event" checked> 按活动订阅列表发送</label> &nbsp; <label><input type="radio" name="recipient_mode" value="csv"> 使用本次上传的 CSV 发送</label></td></tr>
-        <tr class="recipient-event"><th>收件人活动列表</th><td><select name="event_id"><option value="0">全部已订阅收件人</option><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): ?><option value="<?php echo esc_attr(self::event_language_value($e->id, $list_lang)); ?>"><?php echo esc_html(self::event_language_label($e, $list_lang)); ?></option><?php endforeach; endforeach; ?></select><p class="madevma-mailer-help">后台按语言拆分收件人列表；前台仍只显示活动名称和语言选择。</p></td></tr>
-        <tr class="recipient-csv" style="display:none"><th>上传收件人 CSV</th><td><input type="file" name="recipient_csv" accept=".csv"><p class="madevma-mailer-help">先选择邮件模板，再点击“导出该模板的收件人 CSV”。填好 email、name、events 和额外变量后上传。name 会自动用于 {{name}} / {{name1}}。</p></td></tr>
-        <tr><th>正文内容</th><td><div id="bodybox">
+        <table class="form-table"><tr><th><?php esc_html_e( 'Current Template', 'mad-event-mailer' ); ?></th><td><strong><?php echo $selected_template ? esc_html($selected_template->name) : esc_html__( 'No template selected', 'mad-event-mailer' ); ?></strong> <button type="submit" class="button" name="madevma_action" value="export_current_csv"><?php esc_html_e( 'Export Recipient CSV for Current Content', 'mad-event-mailer' ); ?></button><p class="madevma-mailer-help"><?php esc_html_e( 'Use the Template section above to change templates. CSV fields are generated from the current template and body content.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Email Subject', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="subject" id="subject" required value="<?php echo esc_attr($initial_subject); ?>"><p class="madevma-mailer-help"><?php esc_html_e( 'The subject automatically fills {{title}} and {{title1}}, so you do not need to set them separately.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Recipient Source', 'mad-event-mailer' ); ?></th><td><label><input type="radio" name="recipient_mode" value="event" checked> <?php esc_html_e( 'Send by event subscription list', 'mad-event-mailer' ); ?></label> &nbsp; <label><input type="radio" name="recipient_mode" value="csv"> <?php esc_html_e( 'Send using the uploaded CSV', 'mad-event-mailer' ); ?></label></td></tr>
+        <tr class="recipient-event"><th><?php esc_html_e( 'Recipient Event List', 'mad-event-mailer' ); ?></th><td><select name="event_id"><option value="0"><?php esc_html_e( 'All subscribed recipients', 'mad-event-mailer' ); ?></option><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): ?><option value="<?php echo esc_attr(self::event_language_value($e->id, $list_lang)); ?>"><?php echo esc_html(self::event_language_label($e, $list_lang)); ?></option><?php endforeach; endforeach; ?></select><p class="madevma-mailer-help"><?php esc_html_e( 'Admin recipient lists are separated by language; the public form still displays the event name and language choice.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr class="recipient-csv" style="display:none"><th><?php esc_html_e( 'Upload Recipient CSV', 'mad-event-mailer' ); ?></th><td><input type="file" name="recipient_csv" accept=".csv"><p class="madevma-mailer-help"><?php esc_html_e( 'Select a template, export its recipient CSV, fill in email, name, events, and extra variables, then upload it. The name column fills {{name}} and {{name1}}.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Body Content', 'mad-event-mailer' ); ?></th><td><div id="bodybox">
             <?php if (!$selected_template): ?>
-                <p class="description">请先选择模板。</p>
+                <p class="description"><?php esc_html_e( 'Please select a template first.', 'mad-event-mailer' ); ?></p>
             <?php elseif (empty($body_vars)): ?>
-                <p class="description">当前模板没有 <code>{{message}}</code> 或 <code>{{message1}}</code> 正文插槽。你仍然可以在下面填写其它自定义变量。</p>
+                <p class="description"><?php esc_html_e( 'The current template has no {{message}} or {{message1}} body slot. You can still fill in other custom variables below.', 'mad-event-mailer' ); ?></p>
             <?php else: ?>
                 <?php foreach ($body_vars as $bv): ?>
-                    <p><strong>编辑 {{<?php echo esc_html($bv); ?>}} 对应的正文内容</strong></p>
+                    <p><strong><?php echo esc_html(sprintf(
+                        /* translators: %s: template variable name. */
+                        __( 'Edit the body content for {{%s}}', 'mad-event-mailer' ),
+                        $bv
+                    )); ?></strong></p>
                     <?php wp_editor($loaded_vars[$bv] ?? '', 'madevma_body_'.$bv, [
                         'textarea_name' => 'var['.$bv.']',
                         'textarea_rows' => 10,
@@ -1488,31 +1557,31 @@ class MADEVMA_Event_Mailer {
                         'teeny' => false,
                         'quicktags' => true,
                     ]); ?>
-                    <p class="madevma-mailer-help">正文里也可以继续写变量，例如 <code>{{score}}</code>、<code>{{rank}}</code>、<code>{{comment}}</code>。如果你上传 CSV，CSV 里有同名列时会给每个收件人填不同内容。</p>
+                    <p class="madevma-mailer-help"><?php esc_html_e( 'The body can include variables such as {{score}}, {{rank}}, and {{comment}}. Matching CSV columns provide different values for each recipient.', 'mad-event-mailer' ); ?></p>
                 <?php endforeach; ?>
             <?php endif; ?>
         </div></td></tr>
-        <tr><th>邮件底部退订按钮</th><td><label><input type="checkbox" name="include_unsubscribe" value="1" <?php checked($initial_unsub); ?>> 在邮件底部自动添加退订按钮</label>　语言：<select name="unsubscribe_lang"><option value="zh" <?php selected($initial_unsub_lang, 'zh'); ?>>中文</option><option value="en" <?php selected($initial_unsub_lang, 'en'); ?>>English</option></select><p class="madevma-mailer-help">退订按钮由插件自动追加到邮件底部，不需要放在正文或 HTML 模板里。预览、测试邮件和正式发送都会按这里的选择生成。</p></td></tr>
-        <tr><th>其它变量设置</th><td><div id="varbox">
+        <tr><th><?php esc_html_e( 'Email Footer Unsubscribe Button', 'mad-event-mailer' ); ?></th><td><label><input type="checkbox" name="include_unsubscribe" value="1" <?php checked($initial_unsub); ?>> <?php esc_html_e( 'Automatically add an unsubscribe button to the email footer', 'mad-event-mailer' ); ?></label> <?php esc_html_e( 'Language:', 'mad-event-mailer' ); ?> <select name="unsubscribe_lang"><option value="zh" <?php selected($initial_unsub_lang, 'zh'); ?>><?php esc_html_e( 'Chinese', 'mad-event-mailer' ); ?></option><option value="en" <?php selected($initial_unsub_lang, 'en'); ?>><?php esc_html_e( 'English', 'mad-event-mailer' ); ?></option></select><p class="madevma-mailer-help"><?php esc_html_e( 'The plugin appends the unsubscribe button automatically. Previews, test emails, and campaigns use the language selected here.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Other Variables', 'mad-event-mailer' ); ?></th><td><div id="varbox">
             <?php if (!$selected_template): ?>
-                <p class="description">请先选择模板。</p>
+                <p class="description"><?php esc_html_e( 'Please select a template first.', 'mad-event-mailer' ); ?></p>
             <?php elseif (empty($editable_vars)): ?>
-                <p class="madevma-mailer-empty-vars">当前模板没有其它需要手动填写的变量。你在正文里写入 {{score}} 这类变量后，系统会自动在这里增加填写框。</p>
+                <p class="madevma-mailer-empty-vars"><?php esc_html_e( 'The current template has no other variables that require manual input. Add a variable such as {{score}} to the body to create a field here.', 'mad-event-mailer' ); ?></p>
             <?php else: ?>
                 <?php foreach ($editable_vars as $v): ?>
-                    <p class="madevma-mailer-varrow" data-varrow="<?php echo esc_attr($v); ?>"><label><strong class="madevma-mailer-var-label">{{<?php echo esc_html($v); ?>}}</strong><br><textarea class="large-text" rows="3" name="var[<?php echo esc_attr($v); ?>]" placeholder="这里填写全局默认值；如果 CSV 中有同名列，会优先使用每个收件人自己的值。"><?php echo esc_textarea($loaded_vars[$v] ?? ''); ?></textarea></label></p>
+                    <p class="madevma-mailer-varrow" data-varrow="<?php echo esc_attr($v); ?>"><label><strong class="madevma-mailer-var-label">{{<?php echo esc_html($v); ?>}}</strong><br><textarea class="large-text" rows="3" name="var[<?php echo esc_attr($v); ?>]" placeholder="<?php esc_attr_e( 'Enter a global default value. A matching CSV column takes priority for each recipient.', 'mad-event-mailer' ); ?>"><?php echo esc_textarea($loaded_vars[$v] ?? ''); ?></textarea></label></p>
                 <?php endforeach; ?>
             <?php endif; ?>
-        </div><p class="madevma-mailer-help">{{name}} / {{name1}} 会自动从收件人姓名获取，{{title}} / {{title1}} 会自动从邮件主题获取，{{unsubscribe_url}} 会自动生成退订链接。正文内容中的变量会在预览和发送时继续替换。</p></td></tr>
-        <tr><th>发送方式</th><td><label><input type="radio" name="send_mode" value="now" checked> 立即发送</label> <label><input type="radio" name="send_mode" value="schedule"> 定时发送</label> <input type="datetime-local" name="scheduled_at"></td></tr></table>
-        <p class="submit"><button type="submit" class="button" id="previewBtn" name="madevma_action" value="preview_current_static">发送前预览</button> <button type="button" class="button" id="testBtn">发送测试邮件</button> <button type="submit" class="button button-secondary" name="madevma_action" value="save_campaign_draft">保存为草稿</button> <button type="submit" class="button button-primary" name="madevma_action" value="create_campaign">创建发送任务</button></p></form>
-        <div class="madevma-mailer-preview-modal" id="previewModal"><div class="madevma-mailer-preview-box"><div class="madevma-mailer-preview-head"><strong id="previewTitle">发送前预览</strong><div class="madevma-mailer-preview-actions"><span id="previewStatus" class="description"></span><button type="button" class="button" id="closePreview">关闭</button></div></div><div id="testPanel" style="display:none;margin-bottom:14px;padding:12px;border:1px solid #dcdcde;border-radius:8px;background:#f6f7f7"><p><label><strong>测试邮箱</strong><br><input type="email" id="testEmail" class="regular-text" placeholder="test@example.com"></label></p><div id="testVars"></div><p><button type="button" class="button button-primary" id="sendTestNow">发送测试邮件</button></p></div><iframe id="previewFrame" name="madevmaPreviewFrame"></iframe></div></div>
-        <p>注册表单短代码： <code>[madevma_email_register]</code></p><?php self::wrap_end();
+        </div><p class="madevma-mailer-help"><?php esc_html_e( '{{name}} and {{name1}} use the recipient name; {{title}} and {{title1}} use the email subject; {{unsubscribe_url}} generates the unsubscribe URL. Variables in the body are replaced during previews and sending.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr><th><?php esc_html_e( 'Sending Time', 'mad-event-mailer' ); ?></th><td><label><input type="radio" name="send_mode" value="now" checked> <?php esc_html_e( 'Send now', 'mad-event-mailer' ); ?></label> <label><input type="radio" name="send_mode" value="schedule"> <?php esc_html_e( 'Schedule', 'mad-event-mailer' ); ?></label> <input type="datetime-local" name="scheduled_at"></td></tr></table>
+        <p class="submit"><button type="submit" class="button" id="previewBtn" name="madevma_action" value="preview_current_static"><?php esc_html_e( 'Preview', 'mad-event-mailer' ); ?></button> <button type="button" class="button" id="testBtn"><?php esc_html_e( 'Send Test Email', 'mad-event-mailer' ); ?></button> <button type="submit" class="button button-secondary" name="madevma_action" value="save_campaign_draft"><?php esc_html_e( 'Save as Draft', 'mad-event-mailer' ); ?></button> <button type="submit" class="button button-primary" name="madevma_action" value="create_campaign"><?php esc_html_e( 'Create Campaign', 'mad-event-mailer' ); ?></button></p></form>
+        <div class="madevma-mailer-preview-modal" id="previewModal"><div class="madevma-mailer-preview-box"><div class="madevma-mailer-preview-head"><strong id="previewTitle"><?php esc_html_e( 'Preview', 'mad-event-mailer' ); ?></strong><div class="madevma-mailer-preview-actions"><span id="previewStatus" class="description"></span><button type="button" class="button" id="closePreview"><?php esc_html_e( 'Close', 'mad-event-mailer' ); ?></button></div></div><div id="testPanel" style="display:none;margin-bottom:14px;padding:12px;border:1px solid #dcdcde;border-radius:8px;background:#f6f7f7"><p><label><strong><?php esc_html_e( 'Test Email Address', 'mad-event-mailer' ); ?></strong><br><input type="email" id="testEmail" class="regular-text" placeholder="test@example.com"></label></p><div id="testVars"></div><p><button type="button" class="button button-primary" id="sendTestNow"><?php esc_html_e( 'Send Test Email', 'mad-event-mailer' ); ?></button></p></div><iframe id="previewFrame" name="madevmaPreviewFrame"></iframe></div></div>
+        <p><?php esc_html_e( 'Subscription form shortcode:', 'mad-event-mailer' ); ?> <code>[madevma_email_register]</code></p><?php self::wrap_end();
     }
 
     public static function page_campaigns() { self::render_admin_page('render_page_campaigns'); }
     private static function render_page_campaigns() {
-        global $wpdb; self::wrap_start('发送任务');
+        global $wpdb; self::wrap_start(__( 'Campaigns', 'mad-event-mailer' ));
         $events = self::get_events(false);
         $status = sanitize_text_field(wp_unslash($_GET['status'] ?? ''));
         $event_id = absint(wp_unslash($_GET['event_id'] ?? 0));
@@ -1529,15 +1598,15 @@ class MADEVMA_Event_Mailer {
         ?>
         <form method="get" style="margin:12px 0 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <input type="hidden" name="page" value="madevma-mailer-campaigns">
-            <label>按活动筛选 <select name="event_id"><option value="0">全部活动</option><?php foreach($events as $e): ?><option value="<?php echo (int)$e->id; ?>" <?php selected($event_id,(int)$e->id); ?>><?php echo esc_html($e->name); ?></option><?php endforeach; ?></select></label>
-            <label>按状态筛选 <select name="status"><option value="">全部状态</option><?php foreach(['draft','scheduled','queued','sending','finished','failed'] as $st): ?><option value="<?php echo esc_attr($st); ?>" <?php selected($status,$st); ?>><?php echo esc_html(self::status_label($st)); ?></option><?php endforeach; ?></select></label>
-            <button class="button">筛选</button>
-            <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-campaigns')); ?>">重置</a>
+            <label><?php esc_html_e( 'Filter by event', 'mad-event-mailer' ); ?> <select name="event_id"><option value="0"><?php esc_html_e( 'All Events', 'mad-event-mailer' ); ?></option><?php foreach($events as $e): ?><option value="<?php echo (int)$e->id; ?>" <?php selected($event_id,(int)$e->id); ?>><?php echo esc_html($e->name); ?></option><?php endforeach; ?></select></label>
+            <label><?php esc_html_e( 'Filter by status', 'mad-event-mailer' ); ?> <select name="status"><option value=""><?php esc_html_e( 'All Statuses', 'mad-event-mailer' ); ?></option><?php foreach(['draft','scheduled','queued','sending','finished','failed'] as $st): ?><option value="<?php echo esc_attr($st); ?>" <?php selected($status,$st); ?>><?php echo esc_html(self::status_label($st)); ?></option><?php endforeach; ?></select></label>
+            <button class="button"><?php esc_html_e( 'Filter', 'mad-event-mailer' ); ?></button>
+            <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-campaigns')); ?>"><?php esc_html_e( 'Reset', 'mad-event-mailer' ); ?></a>
         </form>
-        <table class="widefat striped"><thead><tr><th>ID</th><th>邮件主题</th><th>活动</th><th>状态</th><th>定时时间</th><th>总数</th><th>已发送</th><th>失败</th><th>创建时间</th><th>操作</th></tr></thead><tbody><?php foreach($rows as $r): $event_name = $r->event_id ? $wpdb->get_var( $wpdb->prepare( 'SELECT name FROM %i WHERE id=%d', self::table('events'), $r->event_id ) ) : '全部 / CSV'; ?>
-        <tr><td><?php echo (int)$r->id; ?></td><td><?php echo esc_html($r->subject); ?></td><td><?php echo esc_html($event_name); ?></td><td><?php echo esc_html(self::status_label($r->status)); ?></td><td><?php echo esc_html($r->scheduled_at); ?></td><td><?php echo (int)$r->total; ?></td><td><?php echo (int)$r->sent; ?></td><td><?php echo (int)$r->failed; ?></td><td><?php echo esc_html($r->created_at); ?></td><td><a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer&campaign_id='.$r->id)); ?>">调用设置继续编辑</a></td></tr>
-        <?php endforeach; if(empty($rows)): ?><tr><td colspan="10">没有找到发送任务。</td></tr><?php endif; ?></tbody></table>
-        <p class="description">“调用设置继续编辑”会回到发送页面，并带入该任务的模板、主题和变量内容。不会直接发送，需要你重新点击创建发送任务。</p>
+        <table class="widefat striped"><thead><tr><th>ID</th><th><?php esc_html_e( 'Email Subject', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Event', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Status', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Scheduled Time', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Total', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Sent', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Failed', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Created', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Actions', 'mad-event-mailer' ); ?></th></tr></thead><tbody><?php foreach($rows as $r): $event_name = $r->event_id ? $wpdb->get_var( $wpdb->prepare( 'SELECT name FROM %i WHERE id=%d', self::table('events'), $r->event_id ) ) : __( 'All / CSV', 'mad-event-mailer' ); ?>
+        <tr><td><?php echo (int)$r->id; ?></td><td><?php echo esc_html($r->subject); ?></td><td><?php echo esc_html($event_name); ?></td><td><?php echo esc_html(self::status_label($r->status)); ?></td><td><?php echo esc_html($r->scheduled_at); ?></td><td><?php echo (int)$r->total; ?></td><td><?php echo (int)$r->sent; ?></td><td><?php echo (int)$r->failed; ?></td><td><?php echo esc_html($r->created_at); ?></td><td><a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer&campaign_id='.$r->id)); ?>"><?php esc_html_e( 'Load Settings to Edit', 'mad-event-mailer' ); ?></a></td></tr>
+        <?php endforeach; if(empty($rows)): ?><tr><td colspan="10"><?php esc_html_e( 'No campaigns found.', 'mad-event-mailer' ); ?></td></tr><?php endif; ?></tbody></table>
+        <p class="description"><?php esc_html_e( 'Load Settings to Edit returns to the send page with the campaign template, subject, and variables. It does not send email until you create a campaign again.', 'mad-event-mailer' ); ?></p>
         <?php self::wrap_end();
     }
 
@@ -1574,53 +1643,57 @@ class MADEVMA_Event_Mailer {
                 $sub = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE email=%s', self::table('subscribers'), $qemail ) );
                 if ($sub) {
                     $names = self::subscriber_event_labels($sub->id);
-                    $query_result = ['found'=>true,'name'=>$sub->name,'email'=>$sub->email,'status'=>$sub->status,'events'=>implode('、', $names) ?: '未选择具体活动'];
+                    $query_result = ['found'=>true,'name'=>$sub->name,'email'=>$sub->email,'status'=>$sub->status,'events'=>implode(', ', $names) ?: __( 'No specific events selected', 'mad-event-mailer' )];
                 } else { $query_result = ['found'=>false,'email'=>$qemail]; }
             }
         }
         $show_query = !empty($query_result);
         ?>
-        <?php if (!empty(sanitize_text_field(wp_unslash($_GET['madevma_registered'] ?? '')))) echo '<div class="madevma-mailer-success">订阅已保存。后续相关活动通知会发送到你的邮箱。</div>'; ?>
-        <?php if (!empty(sanitize_text_field(wp_unslash($_GET['madevma_unsubscribed'] ?? '')))) echo '<div class="madevma-mailer-warning">退订已提交。这个邮箱将不再接收活动通知。</div>'; ?>
+        <?php if (!empty(sanitize_text_field(wp_unslash($_GET['madevma_registered'] ?? '')))) echo '<div class="madevma-mailer-success">'.esc_html__( 'Subscription saved. Future event notifications will be sent to your email.', 'mad-event-mailer' ).'</div>'; ?>
+        <?php if (!empty(sanitize_text_field(wp_unslash($_GET['madevma_unsubscribed'] ?? '')))) echo '<div class="madevma-mailer-warning">'.esc_html__( 'Unsubscription submitted. This email will no longer receive event notifications.', 'mad-event-mailer' ).'</div>'; ?>
         <div class="madevma-mailer-register-wrap"><div class="madevma-mailer-register-card">
             <div class="madevma-mailer-tabs">
-                <button type="button" class="madevma-mailer-tab <?php echo (!$show_unsub && !$show_query) ? 'active' : ''; ?>" data-target="subscribe">订阅通知</button>
-                <button type="button" class="madevma-mailer-tab <?php echo ($show_unsub && !$show_query) ? 'active' : ''; ?>" data-target="unsubscribe">退订通知</button>
-                <button type="button" class="madevma-mailer-tab <?php echo $show_query ? 'active' : ''; ?>" data-target="query">查询订阅</button>
+                <button type="button" class="madevma-mailer-tab <?php echo (!$show_unsub && !$show_query) ? 'active' : ''; ?>" data-target="subscribe"><?php esc_html_e( 'Subscribe', 'mad-event-mailer' ); ?></button>
+                <button type="button" class="madevma-mailer-tab <?php echo ($show_unsub && !$show_query) ? 'active' : ''; ?>" data-target="unsubscribe"><?php esc_html_e( 'Unsubscribe', 'mad-event-mailer' ); ?></button>
+                <button type="button" class="madevma-mailer-tab <?php echo $show_query ? 'active' : ''; ?>" data-target="query"><?php esc_html_e( 'Check Subscription', 'mad-event-mailer' ); ?></button>
             </div>
             <form class="madevma-mailer-panel <?php echo (!$show_unsub && !$show_query) ? 'active' : ''; ?>" data-panel="subscribe" method="post">
                 <input type="hidden" name="madevma_public_register" value="1"><input type="hidden" name="madevma_redirect" value="<?php echo esc_url($current_url); ?>"><?php wp_nonce_field('madevma_public_register', 'madevma_public_nonce'); ?>
-                <h2 class="madevma-mailer-register-title">订阅活动通知</h2>
-                <p class="madevma-mailer-register-sub">填写邮箱并选择你想接收通知的活动。重复提交只会增加新的订阅类目，不会删除你以前已经订阅的类目。</p>
-                <div class="madevma-mailer-grid"><div class="madevma-mailer-field"><label>姓名</label><input type="text" name="name" placeholder="请输入你的姓名" required></div><div class="madevma-mailer-field"><label>邮箱</label><input type="email" name="email" placeholder="name@example.com" required></div></div>
-                <div class="madevma-mailer-field" style="margin-top:16px"><label>订阅语言 / Subscription Language</label><select name="subscription_language" style="width:100%;box-sizing:border-box;border:1px solid #dbe3ef;border-radius:15px;background:#fff;padding:14px 15px;font-size:15px"><option value="zh" <?php selected($current_subscription_language, 'zh'); ?>>中文</option><option value="en" <?php selected($current_subscription_language, 'en'); ?>>English</option></select></div>
-                <div class="madevma-mailer-events"><div class="madevma-mailer-events-title">选择想接收通知的活动</div><div class="madevma-mailer-event-list">
+                <h2 class="madevma-mailer-register-title"><?php esc_html_e( 'Subscribe to Event Notifications', 'mad-event-mailer' ); ?></h2>
+                <p class="madevma-mailer-register-sub"><?php esc_html_e( 'Enter your email and select the events you want to receive. Submitting again only adds new categories and does not remove existing subscriptions.', 'mad-event-mailer' ); ?></p>
+                <div class="madevma-mailer-grid"><div class="madevma-mailer-field"><label><?php esc_html_e( 'Name', 'mad-event-mailer' ); ?></label><input type="text" name="name" placeholder="<?php esc_attr_e( 'Enter your name', 'mad-event-mailer' ); ?>" required></div><div class="madevma-mailer-field"><label><?php esc_html_e( 'Email', 'mad-event-mailer' ); ?></label><input type="email" name="email" placeholder="name@example.com" required></div></div>
+                <div class="madevma-mailer-field" style="margin-top:16px"><label><?php esc_html_e( 'Subscription Language', 'mad-event-mailer' ); ?></label><select name="subscription_language" style="width:100%;box-sizing:border-box;border:1px solid #dbe3ef;border-radius:15px;background:#fff;padding:14px 15px;font-size:15px"><option value="zh" <?php selected($current_subscription_language, 'zh'); ?>><?php esc_html_e( 'Chinese', 'mad-event-mailer' ); ?></option><option value="en" <?php selected($current_subscription_language, 'en'); ?>><?php esc_html_e( 'English', 'mad-event-mailer' ); ?></option></select></div>
+                <div class="madevma-mailer-events"><div class="madevma-mailer-events-title"><?php esc_html_e( 'Select events to receive notifications', 'mad-event-mailer' ); ?></div><div class="madevma-mailer-event-list">
                 <?php foreach($events as $e): ?><label class="madevma-mailer-event-item"><input type="checkbox" name="events[]" value="<?php echo (int)$e->id; ?>"><span><span class="madevma-mailer-event-name"><?php echo esc_html($e->name); ?></span></span></label><?php endforeach; ?>
                 </div></div>
-                <div class="madevma-mailer-actions"><button class="madevma-mailer-submit" type="submit">保存订阅</button><span class="madevma-mailer-note">你可以随时回到这个页面退订。</span></div>
+                <div class="madevma-mailer-actions"><button class="madevma-mailer-submit" type="submit"><?php esc_html_e( 'Save Subscription', 'mad-event-mailer' ); ?></button><span class="madevma-mailer-note"><?php esc_html_e( 'You can return to this page to unsubscribe at any time.', 'mad-event-mailer' ); ?></span></div>
             </form>
             <form class="madevma-mailer-panel <?php echo ($show_unsub && !$show_query) ? 'active' : ''; ?>" data-panel="unsubscribe" method="post">
                 <input type="hidden" name="madevma_public_unsubscribe" value="1"><input type="hidden" name="madevma_redirect" value="<?php echo esc_url($current_url); ?>"><input type="hidden" name="subscription_language" value="<?php echo esc_attr($current_subscription_language); ?>"><?php wp_nonce_field('madevma_public_register', 'madevma_public_nonce'); ?>
-                <h2 class="madevma-mailer-register-title">退订活动通知</h2>
-                <p class="madevma-mailer-register-sub">请输入需要退订的邮箱。退订会一次性退订全部活动通知，不需要逐个类目取消。</p>
-                <div class="madevma-mailer-field"><label>邮箱</label><input type="email" name="email" placeholder="name@example.com" required></div>
-                <div class="madevma-mailer-actions"><button class="madevma-mailer-submit danger" type="submit">确认退订</button><span class="madevma-mailer-note">退订后，如需重新接收通知，可以再次使用左侧订阅表单。</span></div>
+                <h2 class="madevma-mailer-register-title"><?php esc_html_e( 'Unsubscribe from Event Notifications', 'mad-event-mailer' ); ?></h2>
+                <p class="madevma-mailer-register-sub"><?php esc_html_e( 'Enter the email address to unsubscribe from all event notifications at once.', 'mad-event-mailer' ); ?></p>
+                <div class="madevma-mailer-field"><label><?php esc_html_e( 'Email', 'mad-event-mailer' ); ?></label><input type="email" name="email" placeholder="name@example.com" required></div>
+                <div class="madevma-mailer-actions"><button class="madevma-mailer-submit danger" type="submit"><?php esc_html_e( 'Confirm Unsubscribe', 'mad-event-mailer' ); ?></button><span class="madevma-mailer-note"><?php esc_html_e( 'After unsubscribing, use the subscription form again if you want to receive notifications later.', 'mad-event-mailer' ); ?></span></div>
             </form>
             <form class="madevma-mailer-panel <?php echo $show_query ? 'active' : ''; ?>" data-panel="query" method="post">
                 <input type="hidden" name="madevma_public_query" value="1"><?php wp_nonce_field('madevma_public_register', 'madevma_public_nonce'); ?>
-                <h2 class="madevma-mailer-register-title">查询订阅</h2>
-                <p class="madevma-mailer-register-sub">输入邮箱后，可以查看当前保存的姓名、邮箱和已订阅的活动类目。</p>
-                <div class="madevma-mailer-field"><label>邮箱</label><input type="email" name="email" placeholder="name@example.com" required></div>
-                <div class="madevma-mailer-actions"><button class="madevma-mailer-submit" type="submit">查询订阅</button><span class="madevma-mailer-note">这里只查询订阅状态，不会修改你的订阅。</span></div>
+                <h2 class="madevma-mailer-register-title"><?php esc_html_e( 'Check Subscription', 'mad-event-mailer' ); ?></h2>
+                <p class="madevma-mailer-register-sub"><?php esc_html_e( 'Enter your email to view the saved name, email address, and subscribed event categories.', 'mad-event-mailer' ); ?></p>
+                <div class="madevma-mailer-field"><label><?php esc_html_e( 'Email', 'mad-event-mailer' ); ?></label><input type="email" name="email" placeholder="name@example.com" required></div>
+                <div class="madevma-mailer-actions"><button class="madevma-mailer-submit" type="submit"><?php esc_html_e( 'Check Subscription', 'mad-event-mailer' ); ?></button><span class="madevma-mailer-note"><?php esc_html_e( 'This only checks subscription status and does not modify your subscription.', 'mad-event-mailer' ); ?></span></div>
                 <?php if ($query_result): ?>
                     <div style="margin-top:22px;padding:18px;border:1px solid #dbe3ef;border-radius:16px;background:#fff;">
                     <?php if (!empty($query_result['found'])): ?>
-                        <p><strong>姓名：</strong><?php echo esc_html($query_result['name']); ?></p>
-                        <p><strong>邮箱：</strong><?php echo esc_html($query_result['email']); ?></p>
-                        <p><strong>状态：</strong><?php echo esc_html(self::status_label($query_result['status'])); ?></p>
-                        <p><strong>订阅类目：</strong><?php echo esc_html($query_result['events']); ?></p>
+                        <p><strong><?php esc_html_e( 'Name:', 'mad-event-mailer' ); ?></strong> <?php echo esc_html($query_result['name']); ?></p>
+                        <p><strong><?php esc_html_e( 'Email:', 'mad-event-mailer' ); ?></strong> <?php echo esc_html($query_result['email']); ?></p>
+                        <p><strong><?php esc_html_e( 'Status:', 'mad-event-mailer' ); ?></strong> <?php echo esc_html(self::status_label($query_result['status'])); ?></p>
+                        <p><strong><?php esc_html_e( 'Subscribed Categories:', 'mad-event-mailer' ); ?></strong> <?php echo esc_html($query_result['events']); ?></p>
                     <?php else: ?>
-                        <p>没有找到 <?php echo esc_html($query_result['email']); ?> 的订阅记录。</p>
+                        <p><?php echo esc_html(sprintf(
+                            /* translators: %s: email address. */
+                            __( 'No subscription record was found for %s.', 'mad-event-mailer' ),
+                            $query_result['email']
+                        )); ?></p>
                     <?php endif; ?>
                     </div>
                 <?php endif; ?>

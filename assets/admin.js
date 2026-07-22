@@ -38,7 +38,7 @@
         textarea.className = 'large-text';
         textarea.rows = 3;
         textarea.name = 'var[' + variable + ']';
-        textarea.placeholder = config.varPlaceholder || '这里填写全局默认值；如果 CSV 中有同名列，会优先使用每个收件人自己的值。';
+        textarea.placeholder = config.varPlaceholder || 'Enter a global default value. A matching CSV column takes priority for each recipient.';
         label.appendChild(strong); label.appendChild(document.createElement('br')); label.appendChild(textarea); row.appendChild(label); box.appendChild(row);
     }
     function refreshVars() { extractVars(bodyText()).forEach(addVarField); }
@@ -67,7 +67,7 @@
         document.querySelectorAll('[data-confirm], [data-confirm-delete]').forEach(function (element) {
             var target = element.matches('form') ? element : element;
             target.addEventListener(element.matches('form') ? 'submit' : 'click', function (event) {
-                var message = element.getAttribute('data-confirm') || element.getAttribute('data-confirm-delete') || config.confirmDelete || '确定删除吗？';
+                var message = element.getAttribute('data-confirm') || element.getAttribute('data-confirm-delete') || config.confirmDelete || 'Are you sure you want to delete this?';
                 if (!window.confirm(message)) event.preventDefault();
             });
         });
@@ -96,20 +96,20 @@
         var form = byId('madevma-mailer-send'), modal = byId('previewModal'), panel = byId('testPanel'), frame = byId('previewFrame'), title = byId('previewTitle'), status = byId('previewStatus');
         if (!form) return true;
         if (modal) modal.style.display = 'block'; if (panel) panel.style.display = 'none'; if (frame) frame.style.display = 'block';
-        if (title) title.textContent = config.previewTitle || '发送前预览'; if (status) status.textContent = config.previewStatus || '静态预览：变量会保留为 {{变量名}}，不会发送邮件。';
+        if (title) title.textContent = config.previewTitle || 'Preview'; if (status) status.textContent = config.previewStatus || 'Static preview: variables remain as {{variable_name}} and no email will be sent.';
         form.target = 'madevmaPreviewFrame'; window.setTimeout(function () { form.removeAttribute('target'); }, 1200); return true;
     };
     window.madevmaOpenTest = function () {
         refreshVars();
         var modal = byId('previewModal'), panel = byId('testPanel'), frame = byId('previewFrame'), title = byId('previewTitle'), status = byId('previewStatus'), testVars = byId('testVars');
         if (modal) modal.style.display = 'block'; if (panel) panel.style.display = 'block'; if (frame) frame.style.display = 'none';
-        if (title) title.textContent = config.testTitle || '发送测试邮件'; if (status) status.textContent = '';
+        if (title) title.textContent = config.testTitle || 'Send Test Email'; if (status) status.textContent = '';
         if (testVars) {
             testVars.textContent = '';
-            var help = document.createElement('p'); help.className = 'description'; help.textContent = config.testHelp || '填写测试邮箱和变量示例值。只有点击下面的“发送测试邮件”才会真正发送。'; testVars.appendChild(help);
+            var help = document.createElement('p'); help.className = 'description'; help.textContent = config.testHelp || 'Enter a test email address and sample variable values. Email is sent only when you click Send Test Email below.'; testVars.appendChild(help);
             allVars().forEach(function (variable) {
                 var p = document.createElement('p'), label = document.createElement('label'), strong = document.createElement('strong'), textarea = document.createElement('textarea');
-                strong.textContent = '{{' + variable + '}}'; textarea.className = 'large-text'; textarea.rows = 2; textarea.setAttribute('data-test-var', variable); textarea.placeholder = (config.testPlaceholder || '测试示例值；不填则保留 {{变量名}}').replace('{{变量名}}', '{{' + variable + '}}').replace('{{variable_name}}', '{{' + variable + '}}');
+                strong.textContent = '{{' + variable + '}}'; textarea.className = 'large-text'; textarea.rows = 2; textarea.setAttribute('data-test-var', variable); textarea.placeholder = (config.testPlaceholder || 'Test sample value; leave blank to keep {{variable_name}}').replace('{{variable_name}}', '{{' + variable + '}}');
                 label.appendChild(strong); label.appendChild(document.createElement('br')); label.appendChild(textarea); p.appendChild(label); testVars.appendChild(p);
             });
         }
@@ -129,13 +129,13 @@
         var close = byId('closePreview'); if (close) close.addEventListener('click', window.madevmaCloseModal);
         var send = byId('sendTestNow'); if (send) send.addEventListener('click', function (event) {
             event.preventDefault(); syncEditors(); refreshVars();
-            var email = byId('testEmail') ? byId('testEmail').value : ''; if (!email) { window.alert(config.emailRequired || '请填写测试邮箱。'); return; }
+            var email = byId('testEmail') ? byId('testEmail').value : ''; if (!email) { window.alert(config.emailRequired || 'Please enter a test email address.'); return; }
             var data = new FormData(form); data.delete('madevma_action'); data.append('action', 'madevma_test_send'); data.append('nonce', config.previewNonce || ''); data.append('test_email', email);
             document.querySelectorAll('[data-test-var]').forEach(function (field) { var key = field.getAttribute('data-test-var'); data.append('test_var[' + key + ']', field.value || '{{' + key + '}}'); });
-            var status = byId('previewStatus'); if (status) status.textContent = config.sending || '正在发送测试邮件...';
+            var status = byId('previewStatus'); if (status) status.textContent = config.sending || 'Sending test email...';
             window.fetch(config.ajaxUrl, { method: 'POST', body: data, credentials: 'same-origin' }).then(function (response) { return response.json(); }).then(function (result) {
-                if (status) status.textContent = result && result.data && result.data.message ? result.data.message : (result && result.success ? (config.sent || '测试邮件已发送。') : (config.failed || '测试邮件发送失败。'));
-            }).catch(function () { if (status) status.textContent = config.failedPermission || '测试邮件发送失败，请检查 SMTP 设置或后台权限。'; });
+                if (status) status.textContent = result && result.data && result.data.message ? result.data.message : (result && result.success ? (config.sent || 'Test email sent.') : (config.failed || 'Test email failed.'));
+            }).catch(function () { if (status) status.textContent = config.failedPermission || 'Test email failed. Please check SMTP settings or admin permissions.'; });
         });
         window.setTimeout(refreshVars, 600);
     }

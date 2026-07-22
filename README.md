@@ -16,7 +16,7 @@ The plugin was created for event operation scenarios such as submission notices,
 - **Author:** [MAD Producer Studio](https://github.com/MAD-Producer)
 - **License:** GPL v2
 - **Text domain:** `mad-event-mailer`
-- **Current version:** 2.3.0
+- **Current version:** 2.3.1
 - **Shortcode:** `[madevma_email_register]`
 
 ## Main Features
@@ -174,7 +174,7 @@ The scheduled sending system uses WordPress Cron, so real execution time may dep
 
 The SMTP Settings page provides separate URL fields for the email logo and footer icon. Built-in templates reference these values through `{{logo_url}}` and `{{icon_url}}`, so the plugin does not ship with hard-coded remote image dependencies. Leaving either field blank hides the corresponding image.
 
-The administration and public subscription interfaces default to Chinese. Bundled translation files are intentionally not included; WordPress.org translations can be managed through translate.wordpress.org after publication.
+The administration and public subscription interfaces use English source strings and standard WordPress gettext functions with the `mad-event-mailer` text domain. Community translations are managed through translate.wordpress.org; translation files are not bundled in the release package.
 
 ## Installation
 
@@ -184,7 +184,7 @@ The administration and public subscription interfaces default to Chinese. Bundle
 2. Go to WordPress Admin → Plugins → Add New → Upload Plugin.
 3. Upload the ZIP file.
 4. Activate the plugin.
-5. Go to **MAD Mail / MAD 邮件** in the WordPress admin menu.
+5. Go to **MAD Mail** in the WordPress admin menu.
 6. Configure SMTP settings before sending emails.
 
 ### Install from Source
@@ -292,6 +292,14 @@ Table names may vary depending on the WordPress database prefix.
 - For better deliverability, configure SPF, DKIM, and DMARC for the sender domain.
 
 ## Release Notes
+
+### 2.3.1
+
+- Converted the administration and public subscription interfaces to English source strings.
+- Replaced the custom translation helper with WordPress gettext functions using the `mad-event-mailer` text domain.
+- Localized dynamic JavaScript messages through WordPress and changed all JavaScript fallback text to English.
+- Migrated built-in template names to English while preserving compatibility with existing 2.3.0 data.
+- Corrected WordPress.org directory tags and short-description length.
 
 ### 2.3.0
 
