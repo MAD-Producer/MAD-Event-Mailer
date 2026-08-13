@@ -16,7 +16,7 @@ The plugin was created for event operation scenarios such as submission notices,
 - **Author:** [MAD Producer Studio](https://github.com/MAD-Producer)
 - **License:** GPL v2
 - **Text domain:** `mad-event-mailer`
-- **Current version:** 2.3.1
+- **Current version:** 2.4.0
 - **Shortcode:** `[madevma_email_register]`
 
 ## Main Features
@@ -111,7 +111,14 @@ Required fields:
 Optional fields:
 
 - `events`
+- `template`
 - any custom variables used in the selected template or body content
+
+### Online Recipient Editor
+
+The Subscribers screen also provides a row-by-row editor. Each row can be assigned to one or more event-language recipient lists and bound to a specific email template. Template variables can be stored per recipient and are merged into the campaign before rendering.
+
+Clearly promotional advertising rows are rejected by the recipient filter during public subscription, manual entry, CSV import, online editing, campaign preparation, and sending. Existing rows can be cleaned from the Subscribers screen.
 
 ### Event-Based Subscription Lists
 
@@ -292,6 +299,14 @@ Table names may vary depending on the WordPress database prefix.
 - For better deliverability, configure SPF, DKIM, and DMARC for the sender domain.
 
 ## Release Notes
+
+### 2.4.0
+
+- Updated WordPress.org metadata to `Tested up to: 7.1`.
+- Added obvious-advertisement recipient filtering across recipient intake and delivery.
+- Added online recipient row editing with event-language grouping and per-recipient template binding.
+- Added per-recipient template variables and synchronized campaign delivery with the bound template.
+- Added the `template` column to recipient CSV templates and exports.
 
 ### 2.3.1
 

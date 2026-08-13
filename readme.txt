@@ -2,9 +2,9 @@
 Contributors: ruoqin
 Tags: email, smtp, newsletter, event, csv
 Requires at least: 6.2
-Tested up to: 7.0
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.3.1
+Stable tag: 2.4.0
 License: GPL v2
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -34,7 +34,22 @@ Yes. Enter the Logo URL and Icon URL under SMTP Settings. The built-in templates
 
 Yes. Use variables such as `{{score}}`, `{{rank}}`, and `{{comment}}`, then include matching CSV columns.
 
+= Can I edit recipients without uploading a CSV? =
+
+Yes. The Subscribers screen includes an online row editor. Each recipient can be assigned to event-language lists and bound to an email template; the bound template and recipient variables are used when a campaign is sent.
+
+= Does the plugin reject advertising recipients? =
+
+The importer, online editor, public subscription form, and sending pipeline reject clearly promotional rows, such as link-heavy cryptocurrency advertisements. Existing rows can be reviewed and discarded from the Subscribers screen.
+
 == Changelog ==
+
+= 2.4.0 =
+* Updated the WordPress.org metadata to Tested up to WordPress 7.1 and reviewed the plugin's admin editor, file upload, toolbar, and dependency usage for the 7.1 changes.
+* Added an obvious-advertisement recipient filter across public subscriptions, manual entry, CSV imports, online editing, campaign preparation, and sending.
+* Added online row-by-row recipient editing with event-language grouping, per-recipient template binding, and per-recipient template variables.
+* Extended recipient CSV templates and exports with a `template` column.
+* Updated campaign logs and sending to use the recipient-bound template before the campaign fallback template.
 
 = 2.3.1 =
 * Converted the administration and public subscription interfaces to English source strings.

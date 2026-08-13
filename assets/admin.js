@@ -86,6 +86,44 @@
             });
         });
     }
+    function bindRecipientGrid() {
+        var form = byId('madevma-recipient-grid-form');
+        if (!form) return;
+        var body = form.querySelector('tbody'), add = byId('madevma-add-recipient-row');
+        if (!body) return;
+        function nextIndex() {
+            var max = -1;
+            body.querySelectorAll('[name]').forEach(function (field) {
+                var match = field.name.match(/recipient_grid\[(\d+)\]/);
+                if (match) max = Math.max(max, parseInt(match[1], 10));
+            });
+            return max + 1;
+        }
+        function clearRow(row, index) {
+            row.querySelectorAll('[name]').forEach(function (field) {
+                field.name = field.name.replace(/recipient_grid\[\d+\]/, 'recipient_grid[' + index + ']');
+                if (field.name.endsWith('[id]')) field.value = '0';
+                else if (field.name.endsWith('[status]')) field.value = 'subscribed';
+                else if (field.name.endsWith('[template_id]')) field.value = '0';
+                else if (field.name.endsWith('[email]') || field.name.endsWith('[name]') || field.name.endsWith('[events]') || field.name.endsWith('[variables_json]')) field.value = '';
+            });
+        }
+        if (add) add.addEventListener('click', function () {
+            var source = body.querySelector('tr');
+            if (!source) return;
+            var row = source.cloneNode(true);
+            clearRow(row, nextIndex());
+            body.appendChild(row);
+        });
+        body.addEventListener('click', function (event) {
+            var button = event.target.closest('.madevma-remove-recipient-row');
+            if (!button) return;
+            var row = button.closest('tr');
+            if (!row) return;
+            if (body.querySelectorAll('tr').length > 1) row.remove();
+            else clearRow(row, nextIndex());
+        });
+    }
 
     window.madevmaCloseModal = function () {
         var modal = byId('previewModal'), frame = byId('previewFrame');
@@ -140,6 +178,6 @@
         window.setTimeout(refreshVars, 600);
     }
 
-    function ready() { bindTemplatePage(); bindConfirmations(); bindEventOrder(); bindSendPage(); }
+    function ready() { bindTemplatePage(); bindConfirmations(); bindEventOrder(); bindRecipientGrid(); bindSendPage(); }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready); else ready();
 }());

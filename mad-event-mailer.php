@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAD Event Mailer
  * Description: An HTML email delivery plugin for event notifications. Supports SMTP, template variables, CSV recipients, event subscriptions, shortcode registration, batch sending and scheduled sending.
- * Version: 2.3.1
+ * Version: 2.4.0
  * Requires at least: 6.2
  * Author: MAD Producer Studio
  * Author URI: https://github.com/MAD-Producer
@@ -14,7 +14,7 @@
 if (!defined('ABSPATH')) exit;
 
 class MADEVMA_Event_Mailer {
-    const VERSION = '2.3.1';
+    const VERSION = '2.4.0';
     const OPT = 'madevma_settings';
     const CRON = 'madevma_process_campaigns';
     const CAP = 'madevma_manage_mailer';
@@ -85,11 +85,14 @@ class MADEVMA_Event_Mailer {
             email VARCHAR(190) NOT NULL,
             name VARCHAR(190) DEFAULT '',
             status VARCHAR(20) NOT NULL DEFAULT 'subscribed',
+            template_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            variables LONGTEXT NULL,
             source VARCHAR(50) DEFAULT 'manual',
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
             PRIMARY KEY (id),
-            UNIQUE KEY email (email)
+            UNIQUE KEY email (email),
+            KEY template_id (template_id)
         ) $charset;");
 
         dbDelta("CREATE TABLE {$prefix}subscriber_events (
@@ -123,6 +126,7 @@ class MADEVMA_Event_Mailer {
             campaign_id BIGINT UNSIGNED NOT NULL,
             subscriber_id BIGINT UNSIGNED NOT NULL,
             email VARCHAR(190) NOT NULL,
+            template_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             status VARCHAR(20) NOT NULL DEFAULT 'pending',
             error TEXT NULL,
             sent_at DATETIME NULL,
@@ -162,9 +166,7 @@ class MADEVMA_Event_Mailer {
         foreach (['templates', 'events', 'subscribers', 'subscriber_events', 'campaigns', 'campaign_logs', 'campaign_recipient_vars'] as $name) {
             $legacy_table = $wpdb->prefix . $legacy_namespace . '_' . $name;
             $current_table = self::table($name);
-            if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($legacy_table))) === $legacy_table) {
-                $wpdb->query($wpdb->prepare('INSERT IGNORE INTO %i SELECT * FROM %i', $current_table, $legacy_table));
-            }
+            if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($legacy_table))) === $legacy_table) self::copy_legacy_table_rows($legacy_table, $current_table);
         }
 
         $legacy_role = $legacy_namespace . '_mail_manager';
@@ -280,7 +282,9 @@ class MADEVMA_Event_Mailer {
     private static function ensure_223_schema() {
         global $wpdb;
         $events = self::table('events');
+        $subscribers = self::table('subscribers');
         $subscriber_events = self::table('subscriber_events');
+        $campaign_logs = self::table('campaign_logs');
         $event_columns = $wpdb->get_col( $wpdb->prepare( 'SHOW COLUMNS FROM %i', $events ), 0 );
         if (is_array($event_columns) && !in_array('sort_order', $event_columns, true)) {
             $wpdb->query( $wpdb->prepare( 'ALTER TABLE %i ADD sort_order INT NOT NULL DEFAULT 0 AFTER active', $events ) );
@@ -291,6 +295,40 @@ class MADEVMA_Event_Mailer {
             $wpdb->query( $wpdb->prepare( 'ALTER TABLE %i ADD language VARCHAR(10) NOT NULL DEFAULT %s AFTER event_id', $subscriber_events, 'zh' ) );
         }
         $wpdb->query( $wpdb->prepare( 'ALTER TABLE %i DROP PRIMARY KEY, ADD PRIMARY KEY (subscriber_id,event_id,language)', $subscriber_events ) );
+
+        $subscriber_columns = $wpdb->get_col( $wpdb->prepare( 'SHOW COLUMNS FROM %i', $subscribers ), 0 );
+        if (is_array($subscriber_columns) && !in_array('template_id', $subscriber_columns, true)) {
+            $wpdb->query( $wpdb->prepare( 'ALTER TABLE %i ADD template_id BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER status', $subscribers ) );
+        }
+        if (is_array($subscriber_columns) && !in_array('variables', $subscriber_columns, true)) {
+            $wpdb->query( $wpdb->prepare( 'ALTER TABLE %i ADD variables LONGTEXT NULL AFTER template_id', $subscribers ) );
+        }
+
+        $campaign_log_columns = $wpdb->get_col( $wpdb->prepare( 'SHOW COLUMNS FROM %i', $campaign_logs ), 0 );
+        if (is_array($campaign_log_columns) && !in_array('template_id', $campaign_log_columns, true)) {
+            $wpdb->query( $wpdb->prepare( 'ALTER TABLE %i ADD template_id BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER email', $campaign_logs ) );
+        }
+    }
+
+    private static function copy_legacy_table_rows($legacy_table, $current_table) {
+        global $wpdb;
+        $legacy_columns = $wpdb->get_col( $wpdb->prepare( 'SHOW COLUMNS FROM %i', $legacy_table ), 0 );
+        $current_columns = $wpdb->get_col( $wpdb->prepare( 'SHOW COLUMNS FROM %i', $current_table ), 0 );
+        if (!is_array($legacy_columns) || !is_array($current_columns)) return;
+        $columns = array_values(array_intersect($current_columns, $legacy_columns));
+        $columns = array_values(array_filter($columns, static function($column) {
+            return preg_match('/^[A-Za-z0-9_]+$/', (string)$column);
+        }));
+        if (empty($columns)) return;
+        $quoted = implode(',', array_map(static function($column) {
+            return '`' . str_replace('`', '``', $column) . '`';
+        }, $columns));
+        $sql = $wpdb->prepare(
+            "INSERT IGNORE INTO %i ({$quoted}) SELECT {$quoted} FROM %i",
+            $current_table,
+            $legacy_table
+        );
+        $wpdb->query($sql);
     }
 
     private static function seed_defaults() {
@@ -440,6 +478,7 @@ class MADEVMA_Event_Mailer {
         $map = [
             'subscribed' => __( 'Subscribed', 'mad-event-mailer' ),
             'unsubscribed' => __( 'Unsubscribed', 'mad-event-mailer' ),
+            'rejected' => __( 'Discarded by spam filter', 'mad-event-mailer' ),
             'draft' => __( 'Draft', 'mad-event-mailer' ),
             'scheduled' => __( 'Scheduled', 'mad-event-mailer' ),
             'queued' => __( 'Queued', 'mad-event-mailer' ),
@@ -558,8 +597,8 @@ class MADEVMA_Event_Mailer {
         global $wpdb;
         $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
         if (!$template) wp_die(esc_html(__( 'Template not found.', 'mad-event-mailer' )));
-        $vars = self::editable_vars(self::extract_vars($template->html . ' ' . $template->subject));
-        $headers = array_merge(['email','name','events'], $vars);
+        $vars = self::recipient_template_vars($template->id);
+        $headers = array_merge(['email','name','events','template'], $vars);
         while (ob_get_level()) { ob_end_clean(); }
         nocache_headers();
         header('Content-Type: text/csv; charset=UTF-8');
@@ -571,7 +610,7 @@ class MADEVMA_Event_Mailer {
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
         echo self::csv_line($headers);
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
-        echo self::csv_line(array_merge(['example@example.com', __( 'John Doe', 'mad-event-mailer' ), __( 'Event name or slug', 'mad-event-mailer' )], array_fill(0, count($vars), '')));
+        echo self::csv_line(array_merge(['example@example.com', __( 'John Doe', 'mad-event-mailer' ), __( 'Event name or slug', 'mad-event-mailer' ), $template->name], array_fill(0, count($vars), '')));
         exit;
     }
 
@@ -812,8 +851,36 @@ class MADEVMA_Event_Mailer {
         }
 
         if ($action === 'save_subscriber') {
-            self::save_subscriber_from_post();
-            add_action('admin_notices', fn()=>self::notice(__( 'Subscriber saved.', 'mad-event-mailer' )));
+            $result = self::save_subscriber_from_post();
+            add_action('admin_notices', static function() use ($result) {
+                if (!empty($result['discarded'])) self::notice(__( 'The recipient was discarded by the obvious-ad filter.', 'mad-event-mailer' ), 'warning');
+                elseif (!empty($result['id'])) self::notice(__( 'Subscriber saved.', 'mad-event-mailer' ));
+                else self::notice(__( 'The recipient could not be saved. Please check the email address and template.', 'mad-event-mailer' ), 'error');
+            });
+        }
+
+        if ($action === 'save_recipient_grid') {
+            $result = self::save_recipient_grid_from_post();
+            add_action('admin_notices', static function() use ($result) {
+                $message = sprintf(
+                    /* translators: 1: saved count, 2: discarded count. */
+                    __( 'Online recipient editor saved %1$d row(s); %2$d obvious advertisement row(s) were discarded.', 'mad-event-mailer' ),
+                    (int)$result['saved'],
+                    (int)$result['discarded']
+                );
+                self::notice($message, !empty($result['discarded']) ? 'warning' : 'success');
+            });
+        }
+
+        if ($action === 'clean_obvious_subscribers') {
+            $count = self::cleanup_obvious_subscribers();
+            add_action('admin_notices', static function() use ($count) {
+                self::notice(sprintf(
+                    /* translators: %d: number of discarded subscribers. */
+                    _n( '%d existing obvious advertisement recipient was discarded.', '%d existing obvious advertisement recipients were discarded.', $count, 'mad-event-mailer' ),
+                    $count
+                ), $count ? 'warning' : 'info');
+            });
         }
 
         if ($action === 'export_subscribers_csv') {
@@ -821,12 +888,15 @@ class MADEVMA_Event_Mailer {
         }
 
         if ($action === 'import_csv') {
-            $count = self::import_csv(self::valid_uploaded_file('csv_file', ['csv']));
-            add_action('admin_notices', fn()=>self::notice(sprintf(
-                /* translators: %d: number of imported subscribers. */
-                _n( 'CSV import complete: %d subscriber.', 'CSV import complete: %d subscribers.', $count, 'mad-event-mailer' ),
-                $count
-            )));
+            $result = self::import_csv(self::valid_uploaded_file('csv_file', ['csv']));
+            add_action('admin_notices', static function() use ($result) {
+                self::notice(sprintf(
+                    /* translators: 1: imported count, 2: discarded count. */
+                    __( 'CSV import complete: %1$d subscriber(s) saved; %2$d obvious advertisement row(s) discarded.', 'mad-event-mailer' ),
+                    (int)$result['imported'],
+                    (int)$result['discarded']
+                ), !empty($result['discarded']) ? 'warning' : 'success');
+            });
         }
 
         if ($action === 'delete_subscriber') {
@@ -882,7 +952,7 @@ class MADEVMA_Event_Mailer {
         $posted_vars = self::posted_vars_for_preview();
         $scan = $template->html . ' ' . $template->subject . ' ' . implode(' ', array_map('strval', $posted_vars));
         $vars = array_values(array_diff(self::editable_vars(self::extract_vars($scan)), self::body_vars()));
-        $headers = array_merge(['email','name','events'], $vars);
+        $headers = array_merge(['email','name','events','template'], $vars);
         while (ob_get_level()) { ob_end_clean(); }
         nocache_headers();
         header('Content-Type: text/csv; charset=UTF-8');
@@ -894,7 +964,7 @@ class MADEVMA_Event_Mailer {
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
         echo self::csv_line($headers);
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV download output, not HTML.
-        echo self::csv_line(array_merge(['example@example.com', __( 'John Doe', 'mad-event-mailer' ), __( 'Event name or slug', 'mad-event-mailer' )], array_fill(0, count($vars), '')));
+        echo self::csv_line(array_merge(['example@example.com', __( 'John Doe', 'mad-event-mailer' ), __( 'Event name or slug', 'mad-event-mailer' ), $template->name], array_fill(0, count($vars), '')));
         exit;
     }
 
@@ -919,6 +989,57 @@ class MADEVMA_Event_Mailer {
         $key = (string)$key;
         if (in_array($key, self::body_vars(), true)) return wp_kses_post(wp_unslash($value));
         return sanitize_textarea_field(wp_unslash($value));
+    }
+
+    private static function is_obvious_ad_recipient($email, $name = '') {
+        $email = strtolower(trim((string)$email));
+        $name = trim((string)$name);
+        if ($email === '' && $name === '') return false;
+
+        $haystack = strtolower($email . ' ' . $name);
+        $hard_blocked_domains = [
+            'web-library.net',
+        ];
+        foreach ($hard_blocked_domains as $domain) {
+            if (substr($email, -strlen('@' . $domain)) === '@' . $domain) return true;
+        }
+
+        if (preg_match('/(?:https?:\/\/|www\.|telegra\.ph|graph\.org|t\.me|bit\.ly|tinyurl\.com|discord\.gg)/i', $haystack)) return true;
+
+        $score = 0;
+        $signals = [
+            '/\b(?:coinbase|bitcoin|ethereum|crypto|usdt|wallet|airdrop|casino|viagra|forex|loan|investment|profit|bonus|prize|claim)\b/i',
+            '/\b(?:balance|transfer)\b/i',
+            '/\b(?:get|send)\s*(?:>>>|to you|now)/i',
+            '/(?:[$€£]\s*[\d,.]+|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\s*(?:usd|dollars?)?\b)/i',
+            '/\b[a-z0-9-]+\.(?:com|net|org|xyz|top|site|online|click)(?:[\/?]|$)/i',
+            '/[?&][a-z0-9_-]{2,}=.{4,}/i',
+        ];
+        foreach ($signals as $signal) if (preg_match($signal, $haystack)) $score++;
+        return $score >= 2;
+    }
+
+    private static function discard_obvious_subscriber($subscriber_id) {
+        global $wpdb;
+        $subscriber_id = absint($subscriber_id);
+        if (!$subscriber_id) return false;
+        $updated = $wpdb->update(self::table('subscribers'), [
+            'status' => 'rejected',
+            'source' => 'spam-filter',
+            'updated_at' => self::now(),
+        ], ['id' => $subscriber_id]);
+        $wpdb->delete(self::table('subscriber_events'), ['subscriber_id' => $subscriber_id]);
+        return false !== $updated;
+    }
+
+    private static function cleanup_obvious_subscribers() {
+        global $wpdb;
+        $rows = $wpdb->get_results($wpdb->prepare('SELECT id, email, name FROM %i WHERE status=%s', self::table('subscribers'), 'subscribed'));
+        $count = 0;
+        foreach ($rows as $row) {
+            if (self::is_obvious_ad_recipient($row->email, $row->name) && self::discard_obvious_subscriber($row->id)) $count++;
+        }
+        return $count;
     }
 
     private static function extract_vars($html) {
@@ -1090,19 +1211,93 @@ class MADEVMA_Event_Mailer {
         return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC', self::table('templates') ) );
     }
 
+    private static function template_alias_key($value) {
+        return strtolower(trim(preg_replace('/[\s_-]+/', ' ', (string)$value)));
+    }
+
+    private static function resolve_template_id($value, $fallback = 0, $templates = null) {
+        $value = trim((string)$value);
+        $fallback = absint($fallback);
+        $templates = is_array($templates) ? $templates : self::get_templates();
+        if ($value === '') return $fallback;
+        foreach ($templates as $template) {
+            if ((string)(int)$template->id === $value) return (int)$template->id;
+            if (self::template_alias_key($template->name) === self::template_alias_key($value)) return (int)$template->id;
+            if (sanitize_title($template->name) === sanitize_title($value)) return (int)$template->id;
+        }
+        return $fallback;
+    }
+
+    private static function template_name($template_id, $fallback = '') {
+        $template_id = absint($template_id);
+        if (!$template_id) return $fallback;
+        global $wpdb;
+        $name = $wpdb->get_var($wpdb->prepare('SELECT name FROM %i WHERE id=%d', self::table('templates'), $template_id));
+        return $name ? (string)$name : $fallback;
+    }
+
+    private static function default_template_id($language = 'en') {
+        $language = self::normalize_subscription_language($language);
+        $preferred = $language === 'en'
+            ? ['Default English Template', '默认英文模板']
+            : ['Default Chinese Template', '默认中文模板'];
+        foreach (self::get_templates() as $template) {
+            if (in_array((string)$template->name, $preferred, true)) return (int)$template->id;
+        }
+        return 0;
+    }
+
+    private static function recipient_template_vars($template_id) {
+        $template_id = absint($template_id);
+        if (!$template_id) return [];
+        global $wpdb;
+        $template = $wpdb->get_row($wpdb->prepare('SELECT html, subject FROM %i WHERE id=%d', self::table('templates'), $template_id));
+        if (!$template) return [];
+        $vars = self::extract_vars((string)$template->html . ' ' . (string)$template->subject);
+        return array_values(array_diff(self::editable_vars($vars), self::body_vars()));
+    }
+
+    private static function all_recipient_template_vars($templates) {
+        $vars = [];
+        foreach ((array)$templates as $template) {
+            foreach (self::recipient_template_vars($template->id) as $variable) {
+                if (!in_array($variable, $vars, true)) $vars[] = $variable;
+            }
+        }
+        return $vars;
+    }
+
+    private static function sanitize_recipient_variables($template_id, $values) {
+        if (!is_array($values)) return [];
+        $allowed = array_flip(self::recipient_template_vars($template_id));
+        $variables = [];
+        foreach ($values as $key => $value) {
+            $key = sanitize_key($key);
+            if ($key === '' || !isset($allowed[$key])) continue;
+            $variables[$key] = self::sanitize_var_value($key, $value);
+        }
+        return $variables;
+    }
+
     private static function upsert_subscriber($email, $name, $event_ids, $source='manual', $merge_events=false, $language='en') {
         $language = self::normalize_subscription_language($language);
         $event_lists = [];
         foreach ($event_ids as $eid) if ($eid) $event_lists[] = ['event_id'=>(int)$eid, 'language'=>$language];
-        return self::upsert_subscriber_event_lists($email, $name, $event_lists, $source, $merge_events);
+        return self::upsert_subscriber_event_lists($email, $name, $event_lists, $source, $merge_events, self::default_template_id($language), null, false);
     }
 
-    private static function upsert_subscriber_event_lists($email, $name, $event_lists, $source='manual', $merge_events=false) {
+    private static function upsert_subscriber_event_lists($email, $name, $event_lists, $source='manual', $merge_events=false, $template_id=0, $variables=null, $replace_template=false) {
         global $wpdb;
-        if (!is_email($email)) return 0;
+        $email = sanitize_email($email);
+        if (!is_email($email) || self::is_obvious_ad_recipient($email, $name)) return 0;
         $table = self::table('subscribers');
-        $id = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM %i WHERE email=%s', $table, $email ) );
+        $existing = $wpdb->get_row( $wpdb->prepare( 'SELECT id, template_id FROM %i WHERE email=%s', $table, $email ) );
+        $id = $existing ? (int)$existing->id : 0;
         $data = ['email'=>$email, 'name'=>$name, 'status'=>'subscribed', 'source'=>$source, 'updated_at'=>self::now()];
+        $template_id = absint($template_id);
+        if ($template_id && ($replace_template || empty($existing->template_id))) $data['template_id'] = $template_id;
+        elseif ($replace_template) $data['template_id'] = 0;
+        if (is_array($variables)) $data['variables'] = wp_json_encode($variables);
         if ($id) $wpdb->update($table, $data, ['id'=>$id]); else { $data['created_at']=self::now(); $wpdb->insert($table, $data); $id = (int)$wpdb->insert_id; }
         if (!$merge_events) $wpdb->delete(self::table('subscriber_events'), ['subscriber_id'=>$id]);
         foreach ($event_lists as $list) {
@@ -1178,26 +1373,77 @@ class MADEVMA_Event_Mailer {
     }
 
     private static function save_subscriber_from_post() {
-        global $wpdb;
         $id = absint(wp_unslash($_POST['id'] ?? 0));
         $email = sanitize_email(wp_unslash($_POST['email'] ?? ''));
-        if (!is_email($email)) return 0;
         $name = sanitize_text_field(wp_unslash($_POST['name'] ?? ''));
         $status = in_array(sanitize_text_field(wp_unslash($_POST['status'] ?? 'subscribed')), ['subscribed','unsubscribed'], true) ? sanitize_text_field(wp_unslash($_POST['status'])) : 'subscribed';
-        $table = self::table('subscribers');
-        $existing_id = (int)$wpdb->get_var( $wpdb->prepare( 'SELECT id FROM %i WHERE email=%s', $table, $email ) );
-        if ($id && $existing_id && $existing_id !== $id) return 0;
-        $data = ['email'=>$email, 'name'=>$name, 'status'=>$status, 'source'=>'manual', 'updated_at'=>self::now()];
-        if ($id) $wpdb->update($table, $data, ['id'=>$id]);
-        elseif ($existing_id) { $id = $existing_id; $wpdb->update($table, $data, ['id'=>$id]); }
-        else { $data['created_at']=self::now(); $wpdb->insert($table, $data); $id=(int)$wpdb->insert_id; }
-        $wpdb->delete(self::table('subscriber_events'), ['subscriber_id'=>$id]);
         $lists = isset($_POST['event_lists']) && is_array($_POST['event_lists']) ? wp_unslash($_POST['event_lists']) : [];
+        $event_lists = [];
         foreach ($lists as $list_value) {
             [$event_id, $language] = self::parse_event_language_value($list_value);
+            if ($event_id) $event_lists[] = ['event_id'=>$event_id, 'language'=>$language];
+        }
+        $template_id = self::resolve_template_id(sanitize_text_field(wp_unslash($_POST['template_id'] ?? '0')));
+        $variables = isset($_POST['recipient_vars']) && is_array($_POST['recipient_vars']) ? self::sanitize_recipient_variables($template_id, wp_unslash($_POST['recipient_vars'])) : null;
+        return self::save_subscriber_record($id, $email, $name, $status, $event_lists, $template_id, $variables);
+    }
+
+    private static function save_subscriber_record($id, $email, $name, $status, $event_lists, $template_id=0, $variables=null) {
+        global $wpdb;
+        $email = sanitize_email($email);
+        if (!is_email($email)) return ['id'=>0, 'discarded'=>false, 'error'=>'invalid_email'];
+        if (self::is_obvious_ad_recipient($email, $name)) return ['id'=>0, 'discarded'=>true, 'error'=>'obvious_ad'];
+        $id = absint($id);
+        $table = self::table('subscribers');
+        $existing_id = (int)$wpdb->get_var($wpdb->prepare('SELECT id FROM %i WHERE email=%s', $table, $email));
+        if ($id && $existing_id && $existing_id !== $id) return ['id'=>0, 'discarded'=>false, 'error'=>'duplicate_email'];
+        if (!$id) $id = $existing_id;
+        $template_id = self::resolve_template_id($template_id);
+        $data = [
+            'email'=>$email,
+            'name'=>sanitize_text_field($name),
+            'status'=>$status,
+            'template_id'=>$template_id,
+            'source'=>'manual',
+            'updated_at'=>self::now(),
+        ];
+        if (is_array($variables)) $data['variables'] = wp_json_encode($variables);
+        if ($id) $wpdb->update($table, $data, ['id'=>$id]);
+        else {
+            $data['created_at'] = self::now();
+            $wpdb->insert($table, $data);
+            $id = (int)$wpdb->insert_id;
+        }
+        if (!$id) return ['id'=>0, 'discarded'=>false, 'error'=>'database'];
+        $wpdb->delete(self::table('subscriber_events'), ['subscriber_id'=>$id]);
+        foreach ((array)$event_lists as $list) {
+            $event_id = absint($list['event_id'] ?? 0);
+            $language = self::normalize_subscription_language($list['language'] ?? 'en');
             if ($event_id) $wpdb->replace(self::table('subscriber_events'), ['subscriber_id'=>$id, 'event_id'=>$event_id, 'language'=>$language], ['%d','%d','%s']);
         }
-        return $id;
+        return ['id'=>$id, 'discarded'=>false, 'error'=>''];
+    }
+
+    private static function save_recipient_grid_from_post() {
+        $rows = isset($_POST['recipient_grid']) && is_array($_POST['recipient_grid']) ? wp_unslash($_POST['recipient_grid']) : [];
+        $saved = 0;
+        $discarded = 0;
+        foreach ($rows as $row) {
+            if (!is_array($row)) continue;
+            $email = sanitize_email($row['email'] ?? '');
+            $name = sanitize_text_field($row['name'] ?? '');
+            if ($email === '' && $name === '') continue;
+            $event_lists = self::parse_recipient_list_tokens($row['events'] ?? '', self::recipient_list_map(self::get_events(false)));
+            $template_id = self::resolve_template_id($row['template_id'] ?? '0');
+            $variables_json = sanitize_text_field($row['variables_json'] ?? '');
+            $variables_data = json_decode($variables_json, true);
+            $variables = self::sanitize_recipient_variables($template_id, is_array($variables_data) ? $variables_data : []);
+            $status = in_array(sanitize_text_field($row['status'] ?? 'subscribed'), ['subscribed','unsubscribed'], true) ? sanitize_text_field($row['status']) : 'subscribed';
+            $result = self::save_subscriber_record(absint($row['id'] ?? 0), $email, $name, $status, $event_lists, $template_id, $variables);
+            if (!empty($result['discarded'])) $discarded++;
+            elseif (!empty($result['id'])) $saved++;
+        }
+        return ['saved'=>$saved, 'discarded'=>$discarded];
     }
 
     private static function subscriber_filter_parts($value) {
@@ -1210,9 +1456,9 @@ class MADEVMA_Event_Mailer {
         [$event_id, $language] = self::subscriber_filter_parts($filter_value);
         $subs = self::table('subscribers'); $se = self::table('subscriber_events');
         if ($event_id && $language) {
-            return $wpdb->get_results( $wpdb->prepare( 'SELECT DISTINCT s.* FROM %i s INNER JOIN %i se ON s.id=se.subscriber_id WHERE se.event_id=%d AND se.language=%s ORDER BY s.id DESC LIMIT %d', $subs, $se, $event_id, $language, $limit ) );
+            return $wpdb->get_results( $wpdb->prepare( 'SELECT DISTINCT s.* FROM %i s INNER JOIN %i se ON s.id=se.subscriber_id WHERE COALESCE(s.source,\'\')<>%s AND se.event_id=%d AND se.language=%s ORDER BY s.id DESC LIMIT %d', $subs, $se, 'spam-filter', $event_id, $language, $limit ) );
         }
-        return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC LIMIT %d', $subs, $limit ) );
+        return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE COALESCE(source,\'\')<>%s ORDER BY id DESC LIMIT %d', $subs, 'spam-filter', $limit ) );
     }
 
     private static function subscriber_event_labels($subscriber_id) {
@@ -1233,32 +1479,49 @@ class MADEVMA_Event_Mailer {
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- UTF-8 BOM for CSV download.
         echo "\xEF\xBB\xBF";
         // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV fields are encoded by csv_line(); this is not HTML output.
-        echo self::csv_line(['email','name','status','events']);
+        echo self::csv_line(['email','name','status','events','template']);
         foreach ($rows as $row) {
             // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CSV fields are encoded by csv_line(); this is not HTML output.
-            echo self::csv_line([$row->email, $row->name, $row->status, implode('; ', self::subscriber_event_labels($row->id))]);
+            echo self::csv_line([$row->email, $row->name, $row->status, implode('; ', self::subscriber_event_labels($row->id)), self::template_name($row->template_id ?? 0)]);
         }
         exit;
     }
 
     private static function import_csv($path) {
         $rows = self::parse_csv_file($path);
-        if (empty($rows)) return 0;
+        if (empty($rows)) return ['imported'=>0, 'discarded'=>0];
         $header = array_shift($rows);
-        if (!$header) return 0;
+        if (!$header) return ['imported'=>0, 'discarded'=>0];
         $header = array_map(fn($h)=>strtolower(trim((string) $h)), $header);
-        $count = 0; $event_map = self::recipient_list_map(self::get_events(false));
+        $result = ['imported'=>0, 'discarded'=>0];
+        $event_map = self::recipient_list_map(self::get_events(false));
+        $templates = self::get_templates();
+        $default_template_id = self::resolve_template_id(sanitize_text_field(wp_unslash($_POST['default_template'] ?? '0')), 0, $templates);
         foreach ($rows as $row) {
             $data = array_combine($header, array_pad($row, count($header), ''));
             if (!is_array($data)) continue;
             $email = sanitize_email($data['email'] ?? $data['邮箱'] ?? '');
             $name = sanitize_text_field($data['name'] ?? $data['姓名'] ?? '');
+            if (self::is_obvious_ad_recipient($email, $name)) {
+                $result['discarded']++;
+                continue;
+            }
             $event_text = $data['events'] ?? $data['event'] ?? $data['活动'] ?? '';
             $event_lists = self::parse_recipient_list_tokens($event_text, $event_map);
             if (empty($event_lists)) $event_lists = self::default_recipient_list_from_post();
-            if (self::upsert_subscriber_event_lists($email, $name, $event_lists, 'csv')) $count++;
+            $template_value = $data['template'] ?? $data['template_name'] ?? $data['template_id'] ?? $data['模板'] ?? '';
+            $template_id = self::resolve_template_id($template_value, $default_template_id, $templates);
+            $variables = [];
+            foreach (self::recipient_template_vars($template_id) as $variable) {
+                $column = strtolower($variable);
+                if (array_key_exists($column, $data)) {
+                    $variables[$variable] = self::sanitize_var_value($variable, $data[$column]);
+                }
+            }
+            $sid = self::upsert_subscriber_event_lists($email, $name, $event_lists, 'csv', false, $template_id, $template_id > 0 ? $variables : null, $template_id > 0);
+            if ($sid) $result['imported']++;
         }
-        return $count;
+        return $result;
     }
 
     private static function create_campaign_from_post($as_draft=false) {
@@ -1299,26 +1562,34 @@ class MADEVMA_Event_Mailer {
         if (!$as_draft) {
             if ($recipient_mode === 'csv') {
                 $recipient_csv = self::valid_uploaded_file('recipient_csv', ['csv']);
-                if ($recipient_csv) self::prepare_logs_from_template_csv($cid, $recipient_csv, $all_vars);
+                if ($recipient_csv) self::prepare_logs_from_template_csv($cid, $recipient_csv, $all_vars, $template_id);
             } else {
-                self::prepare_logs($cid, $event_id, $recipient_language);
+                self::prepare_logs($cid, $event_id, $recipient_language, $template_id);
             }
         }
         return $cid;
     }
 
-    private static function prepare_logs($campaign_id, $event_id=0, $language='') {
+    private static function prepare_logs($campaign_id, $event_id=0, $language='', $fallback_template_id=0) {
         global $wpdb;
         $subs = self::table('subscribers'); $se = self::table('subscriber_events'); $logs = self::table('campaign_logs');
         $language = $language ? self::normalize_subscription_language($language) : '';
         if ($event_id && $language) $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT DISTINCT s.* FROM %i s INNER JOIN %i se ON s.id=se.subscriber_id WHERE s.status=%s AND se.event_id=%d AND se.language=%s', $subs, $se, 'subscribed', $event_id, $language ) );
         elseif ($event_id) $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT DISTINCT s.* FROM %i s INNER JOIN %i se ON s.id=se.subscriber_id WHERE s.status=%s AND se.event_id=%d', $subs, $se, 'subscribed', $event_id ) );
         else $rows = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE status=%s', $subs, 'subscribed' ) );
-        foreach ($rows as $s) $wpdb->insert($logs, ['campaign_id'=>$campaign_id, 'subscriber_id'=>$s->id, 'email'=>$s->email, 'status'=>'pending']);
-        $wpdb->update(self::table('campaigns'), ['total'=>count($rows)], ['id'=>$campaign_id]);
+        $count = 0;
+        foreach ($rows as $s) {
+            if (self::is_obvious_ad_recipient($s->email, $s->name)) {
+                self::discard_obvious_subscriber($s->id);
+                continue;
+            }
+            $template_id = absint($s->template_id ?? 0) ?: absint($fallback_template_id);
+            if ($wpdb->insert($logs, ['campaign_id'=>$campaign_id, 'subscriber_id'=>$s->id, 'email'=>$s->email, 'template_id'=>$template_id, 'status'=>'pending'])) $count++;
+        }
+        $wpdb->update(self::table('campaigns'), ['total'=>$count], ['id'=>$campaign_id]);
     }
 
-    private static function prepare_logs_from_template_csv($campaign_id, $path, $template_vars) {
+    private static function prepare_logs_from_template_csv($campaign_id, $path, $template_vars, $campaign_template_id=0) {
         global $wpdb;
         $rows = self::parse_csv_file($path);
         if (empty($rows)) return 0;
@@ -1327,20 +1598,26 @@ class MADEVMA_Event_Mailer {
         if (isset($header[0])) $header[0] = preg_replace('/^\xEF\xBB\xBF/', '', $header[0]);
         $header = array_map(fn($h)=>strtolower(trim((string) $h)), $header);
         $event_map = self::recipient_list_map(self::get_events(false));
-        $count = 0; $editable = self::editable_vars($template_vars);
+        $count = 0; $templates = self::get_templates();
         foreach ($rows as $row) {
             $data = array_combine($header, array_pad($row, count($header), ''));
             if (!is_array($data)) continue;
             $email = sanitize_email($data['email'] ?? $data['邮箱'] ?? '');
             $name = sanitize_text_field($data['name'] ?? $data['姓名'] ?? '');
             if (!is_email($email)) continue;
+            if (self::is_obvious_ad_recipient($email, $name)) continue;
             $event_text = $data['events'] ?? $data['event'] ?? $data['活动'] ?? '';
             $event_lists = self::parse_recipient_list_tokens($event_text, $event_map);
-            $sid = self::upsert_subscriber_event_lists($email, $name, $event_lists, 'csv-campaign', true);
-            if (!$sid) continue;
-            $wpdb->insert(self::table('campaign_logs'), ['campaign_id'=>$campaign_id, 'subscriber_id'=>$sid, 'email'=>$email, 'status'=>'pending']);
+            $template_value = $data['template'] ?? $data['template_name'] ?? $data['template_id'] ?? $data['模板'] ?? '';
+            $row_template_id = self::resolve_template_id($template_value, $campaign_template_id, $templates);
+            if (!$row_template_id) $row_template_id = absint($campaign_template_id);
+            $editable = self::recipient_template_vars($row_template_id);
+            if (!$editable) $editable = array_values(array_diff(self::editable_vars($template_vars), self::body_vars()));
             $per_vars = [];
-            foreach ($editable as $v) if (isset($data[strtolower($v)])) $per_vars[$v] = sanitize_textarea_field($data[strtolower($v)]);
+            foreach ($editable as $v) if (isset($data[strtolower($v)])) $per_vars[$v] = self::sanitize_var_value($v, $data[strtolower($v)]);
+            $sid = self::upsert_subscriber_event_lists($email, $name, $event_lists, 'csv-campaign', true, $row_template_id, null, $row_template_id > 0);
+            if (!$sid) continue;
+            if (!$wpdb->insert(self::table('campaign_logs'), ['campaign_id'=>$campaign_id, 'subscriber_id'=>$sid, 'email'=>$email, 'template_id'=>$row_template_id, 'status'=>'pending'])) continue;
             if ($per_vars) $wpdb->replace(self::table('campaign_recipient_vars'), ['campaign_id'=>$campaign_id, 'subscriber_id'=>$sid, 'variables'=>wp_json_encode($per_vars)]);
             $count++;
         }
@@ -1357,12 +1634,25 @@ class MADEVMA_Event_Mailer {
         else $campaigns = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE status IN (%s,%s) OR (status=%s AND scheduled_at <= %s) ORDER BY id ASC LIMIT 3', $campaign_table, 'queued', 'sending', 'scheduled', $now ) );
         foreach ($campaigns as $c) {
             $wpdb->update($campaign_table, ['status'=>'sending'], ['id'=>$c->id]);
-            $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $c->template_id ) );
-            if (!$template) continue;
             $logs = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE campaign_id=%d AND status=%s LIMIT %d', $log_table, $c->id, 'pending', $limit ) );
             foreach ($logs as $log) {
                 $sub = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('subscribers'), $log->subscriber_id ) );
+                if (!$sub || $sub->status !== 'subscribed' || self::is_obvious_ad_recipient($sub->email, $sub->name)) {
+                    if ($sub && self::is_obvious_ad_recipient($sub->email, $sub->name)) self::discard_obvious_subscriber($sub->id);
+                    $wpdb->update($log_table, ['status'=>'failed', 'error'=>__( 'Recipient discarded by spam filter.', 'mad-event-mailer' ), 'sent_at'=>self::now()], ['id'=>$log->id]);
+                    $wpdb->query( $wpdb->prepare( 'UPDATE %i SET failed=failed+1 WHERE id=%d', $campaign_table, $c->id ) );
+                    continue;
+                }
+                $template_id = absint($log->template_id ?? 0) ?: absint($c->template_id);
+                $template = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), $template_id ) );
+                if (!$template) {
+                    $wpdb->update($log_table, ['status'=>'failed', 'error'=>__( 'Email template not found.', 'mad-event-mailer' ), 'sent_at'=>self::now()], ['id'=>$log->id]);
+                    $wpdb->query( $wpdb->prepare( 'UPDATE %i SET failed=failed+1 WHERE id=%d', $campaign_table, $c->id ) );
+                    continue;
+                }
                 $vars = json_decode($c->variables, true) ?: [];
+                $subscriber_vars = json_decode($sub->variables ?? '', true);
+                if (is_array($subscriber_vars)) $vars = array_merge($vars, $subscriber_vars);
                 $per = $wpdb->get_var( $wpdb->prepare( 'SELECT variables FROM %i WHERE campaign_id=%d AND subscriber_id=%d', self::table('campaign_recipient_vars'), $c->id, $log->subscriber_id ) );
                 if ($per) $vars = array_merge($vars, json_decode($per, true) ?: []);
                 $vars['email'] = $sub->email ?? $log->email;
@@ -1416,7 +1706,6 @@ class MADEVMA_Event_Mailer {
         $edit = null;
         if (!empty($_GET['edit'])) $edit = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('templates'), absint(wp_unslash($_GET['edit'])) ) );
         self::wrap_start(__( 'Email Templates', 'mad-event-mailer' ));
-        $show_query = !empty($query_result);
         ?>
         <div class="notice notice-info" style="padding:12px 14px"><p><strong><?php esc_html_e( 'Template Syntax Rules:', 'mad-event-mailer' ); ?></strong></p><p><?php esc_html_e( 'Variables use the {{variable_name}} format and may contain letters, numbers, underscores, or hyphens only. {{title}} / {{title1}} use the campaign subject; {{name}} / {{name1}} use the recipient name; {{email}} uses the recipient email; and {{unsubscribe_url}} generates the unsubscribe URL.', 'mad-event-mailer' ); ?></p><p><?php esc_html_e( 'General templates should keep a {{message1}} or {{message}} body slot. You can add variables such as {{score}} and {{rank}} to the body; matching CSV columns override their values for each recipient.', 'mad-event-mailer' ); ?></p></div>
         <h2><?php esc_html_e( 'Quick Create from General Template', 'mad-event-mailer' ); ?></h2>
@@ -1463,6 +1752,8 @@ class MADEVMA_Event_Mailer {
     private static function render_page_subscribers() {
         global $wpdb;
         $events = self::get_events(false);
+        $templates = self::get_templates();
+        $recipient_vars = self::all_recipient_template_vars($templates);
         $edit_id = absint(wp_unslash($_GET['edit'] ?? 0));
         $edit = $edit_id ? $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('subscribers'), $edit_id ) ) : null;
         $selected_lists = $edit ? self::subscriber_event_language_values($edit->id) : [];
@@ -1470,13 +1761,24 @@ class MADEVMA_Event_Mailer {
         $rows = self::get_filtered_subscribers($filter_value, 200);
         $total = count($rows);
         self::wrap_start(__( 'Subscribers', 'mad-event-mailer' )); ?>
-        <p><?php esc_html_e( 'Supported CSV columns: email, name, and events. The legacy Chinese headers are also accepted. Enter recipient-list names in the events column and separate multiple lists with commas.', 'mad-event-mailer' ); ?></p>
-        <form method="post" enctype="multipart/form-data"><?php self::nonce('import_csv'); ?><input type="file" name="csv_file" accept=".csv" required> <?php esc_html_e( 'Default Event:', 'mad-event-mailer' ); ?> <select name="default_event"><option value="0"><?php esc_html_e( 'None', 'mad-event-mailer' ); ?></option><?php foreach($events as $e) foreach(['zh','en'] as $list_lang) echo '<option value="'.esc_attr(self::event_language_value($e->id,$list_lang)).'">'.esc_html(self::event_language_label($e,$list_lang)).'</option>'; ?></select> <?php submit_button(__( 'Import CSV', 'mad-event-mailer' ), 'secondary', 'submit', false); ?></form>
+        <p><?php esc_html_e( 'Supported CSV columns: email, name, events, template, and variables used by the selected template. The legacy Chinese headers are also accepted. Enter recipient-list names in the events column and separate multiple lists with commas.', 'mad-event-mailer' ); ?></p>
+        <form method="post" enctype="multipart/form-data"><?php self::nonce('import_csv'); ?><input type="file" name="csv_file" accept=".csv" required> <?php esc_html_e( 'Default Event:', 'mad-event-mailer' ); ?> <select name="default_event"><option value="0"><?php esc_html_e( 'None', 'mad-event-mailer' ); ?></option><?php foreach($events as $e) foreach(['zh','en'] as $list_lang) echo '<option value="'.esc_attr(self::event_language_value($e->id,$list_lang)).'">'.esc_html(self::event_language_label($e,$list_lang)).'</option>'; ?></select> <?php esc_html_e( 'Default Template:', 'mad-event-mailer' ); ?> <select name="default_template"><option value="0"><?php esc_html_e( 'None', 'mad-event-mailer' ); ?></option><?php foreach($templates as $template) echo '<option value="'.(int)$template->id.'">'.esc_html($template->name).'</option>'; ?></select> <?php submit_button(__( 'Import CSV', 'mad-event-mailer' ), 'secondary', 'submit', false); ?></form>
+        <form method="post" style="margin:12px 0"><?php self::nonce('clean_obvious_subscribers'); ?><?php submit_button(__( 'Discard Existing Obvious Ads', 'mad-event-mailer' ), 'secondary', 'submit', false); ?> <span class="description"><?php esc_html_e( 'Clearly promotional recipient rows are rejected during import, online editing, subscriptions, and sending.', 'mad-event-mailer' ); ?></span></form>
         <h2><?php echo esc_html($edit ? __( 'Edit Subscriber', 'mad-event-mailer' ) : __( 'Add Subscriber', 'mad-event-mailer' )); ?></h2>
         <form method="post"><?php self::nonce('save_subscriber'); ?><input type="hidden" name="id" value="<?php echo esc_attr($edit->id ?? 0); ?>">
-            <p><input name="email" placeholder="email@example.com" required value="<?php echo esc_attr($edit->email ?? ''); ?>"> <input name="name" placeholder="<?php esc_attr_e( 'Name', 'mad-event-mailer' ); ?>" value="<?php echo esc_attr($edit->name ?? ''); ?>"> <select name="status"><option value="subscribed" <?php selected($edit->status ?? 'subscribed','subscribed'); ?>><?php esc_html_e( 'Subscribed', 'mad-event-mailer' ); ?></option><option value="unsubscribed" <?php selected($edit->status ?? 'subscribed','unsubscribed'); ?>><?php esc_html_e( 'Unsubscribed', 'mad-event-mailer' ); ?></option></select></p>
+            <p><input name="email" placeholder="email@example.com" required value="<?php echo esc_attr($edit->email ?? ''); ?>"> <input name="name" placeholder="<?php esc_attr_e( 'Name', 'mad-event-mailer' ); ?>" value="<?php echo esc_attr($edit->name ?? ''); ?>"> <select name="status"><option value="subscribed" <?php selected($edit->status ?? 'subscribed','subscribed'); ?>><?php esc_html_e( 'Subscribed', 'mad-event-mailer' ); ?></option><option value="unsubscribed" <?php selected($edit->status ?? 'subscribed','unsubscribed'); ?>><?php esc_html_e( 'Unsubscribed', 'mad-event-mailer' ); ?></option></select> <?php esc_html_e( 'Template:', 'mad-event-mailer' ); ?> <select name="template_id"><option value="0"><?php esc_html_e( 'Use campaign template', 'mad-event-mailer' ); ?></option><?php foreach($templates as $template): ?><option value="<?php echo (int)$template->id; ?>" <?php selected((int)($edit->template_id ?? 0), (int)$template->id); ?>><?php echo esc_html($template->name); ?></option><?php endforeach; ?></select></p>
             <p><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): $value=self::event_language_value($e->id,$list_lang); ?><label style="margin-right:12px"><input type="checkbox" name="event_lists[]" value="<?php echo esc_attr($value); ?>" <?php checked(in_array($value, $selected_lists, true)); ?>> <?php echo esc_html(self::event_language_label($e,$list_lang)); ?></label><?php endforeach; endforeach; ?></p>
+            <?php if ($edit && !empty($recipient_vars)): ?><p><strong><?php esc_html_e( 'Recipient Template Variables', 'mad-event-mailer' ); ?></strong></p><p><?php foreach($recipient_vars as $variable): $saved_vars = json_decode($edit->variables ?? '', true) ?: []; ?><label style="display:inline-block;min-width:220px;margin:0 12px 8px 0"><code>{{<?php echo esc_html($variable); ?>}}</code><input type="text" name="recipient_vars[<?php echo esc_attr($variable); ?>]" value="<?php echo esc_attr($saved_vars[$variable] ?? ''); ?>"></label><?php endforeach; ?></p><?php endif; ?>
             <?php submit_button($edit ? __( 'Update Subscriber', 'mad-event-mailer' ) : __( 'Save', 'mad-event-mailer' ), 'secondary', 'submit', false); ?> <?php if($edit): ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-subscribers')); ?>"><?php esc_html_e( 'Cancel Editing', 'mad-event-mailer' ); ?></a><?php endif; ?>
+        </form>
+        <h2><?php esc_html_e( 'Online Recipient Editor', 'mad-event-mailer' ); ?></h2>
+        <p><?php esc_html_e( 'Add or edit one recipient per row. Select the event lists and the email template for each row; custom template variables are entered in the final column.', 'mad-event-mailer' ); ?></p>
+        <form method="post" id="madevma-recipient-grid-form"><?php self::nonce('save_recipient_grid'); ?>
+            <div class="madevma-recipient-grid-wrap"><table class="widefat striped madevma-recipient-grid"><thead><tr><th><?php esc_html_e( 'Email', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Name', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Event Lists', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Template', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Status', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Variables (JSON)', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Remove', 'mad-event-mailer' ); ?></th></tr></thead><tbody>
+            <?php $grid_rows = array_slice($rows, 0, 20); if (empty($grid_rows)) $grid_rows = [(object)['id'=>0,'email'=>'','name'=>'','status'=>'subscribed','template_id'=>0,'variables'=>'']]; foreach ($grid_rows as $grid_index => $row): $saved_vars = json_decode($row->variables ?? '', true) ?: []; ?>
+            <tr><td><input type="hidden" name="recipient_grid[<?php echo (int)$grid_index; ?>][id]" value="<?php echo (int)$row->id; ?>"><input type="email" name="recipient_grid[<?php echo (int)$grid_index; ?>][email]" value="<?php echo esc_attr($row->email); ?>"></td><td><input type="text" name="recipient_grid[<?php echo (int)$grid_index; ?>][name]" value="<?php echo esc_attr($row->name); ?>"></td><td><input type="text" name="recipient_grid[<?php echo (int)$grid_index; ?>][events]" value="<?php echo esc_attr(implode('; ', self::subscriber_event_labels($row->id))); ?>" placeholder="Event English, Event Chinese"></td><td><select name="recipient_grid[<?php echo (int)$grid_index; ?>][template_id]"><option value="0"><?php esc_html_e( 'Use campaign template', 'mad-event-mailer' ); ?></option><?php foreach($templates as $template): ?><option value="<?php echo (int)$template->id; ?>" <?php selected((int)$row->template_id, (int)$template->id); ?>><?php echo esc_html($template->name); ?></option><?php endforeach; ?></select></td><td><select name="recipient_grid[<?php echo (int)$grid_index; ?>][status]"><option value="subscribed" <?php selected($row->status, 'subscribed'); ?>><?php esc_html_e( 'Subscribed', 'mad-event-mailer' ); ?></option><option value="unsubscribed" <?php selected($row->status, 'unsubscribed'); ?>><?php esc_html_e( 'Unsubscribed', 'mad-event-mailer' ); ?></option></select></td><td><input type="text" name="recipient_grid[<?php echo (int)$grid_index; ?>][variables_json]" value="<?php echo esc_attr(wp_json_encode($saved_vars)); ?>" placeholder="{&quot;score&quot;:&quot;95&quot;}"></td><td><button type="button" class="button-link-delete madevma-remove-recipient-row"><?php esc_html_e( 'Remove', 'mad-event-mailer' ); ?></button></td></tr>
+            <?php endforeach; ?></tbody></table></div>
+            <p><button type="button" class="button" id="madevma-add-recipient-row"><?php esc_html_e( 'Add Row', 'mad-event-mailer' ); ?></button> <?php submit_button(__( 'Save Online Recipients', 'mad-event-mailer' ), 'primary', 'submit', false); ?></p>
         </form>
         <h2><?php esc_html_e( 'Subscriber List', 'mad-event-mailer' ); ?></h2>
         <form method="get" style="margin:12px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input type="hidden" name="page" value="madevma-mailer-subscribers"><label><?php esc_html_e( 'Filter by event language', 'mad-event-mailer' ); ?> <select name="subscriber_filter"><option value="0"><?php esc_html_e( 'All Subscribers', 'mad-event-mailer' ); ?></option><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): $value=self::event_language_value($e->id,$list_lang); ?><option value="<?php echo esc_attr($value); ?>" <?php selected($filter_value,$value); ?>><?php echo esc_html(self::event_language_label($e,$list_lang)); ?></option><?php endforeach; endforeach; ?></select></label><?php submit_button(__( 'Filter', 'mad-event-mailer' ), 'secondary', 'submit', false); ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-subscribers')); ?>"><?php esc_html_e( 'Reset', 'mad-event-mailer' ); ?></a></form>
@@ -1485,9 +1787,9 @@ class MADEVMA_Event_Mailer {
             _n( '%d subscriber in the current filter.', '%d subscribers in the current filter.', $total, 'mad-event-mailer' ),
             $total
         )); ?></span></form>
-        <table class="widefat striped"><thead><tr><th><?php esc_html_e( 'Email', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Name', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Subscribed Events', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Status', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Actions', 'mad-event-mailer' ); ?></th></tr></thead><tbody><?php foreach($rows as $r): $names=self::subscriber_event_labels($r->id); ?>
-        <tr><td><?php echo esc_html($r->email); ?></td><td><?php echo esc_html($r->name); ?></td><td><?php echo esc_html(implode(', ', $names)); ?></td><td><?php echo esc_html(self::status_label($r->status)); ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-subscribers&edit='.$r->id)); ?>"><?php esc_html_e( 'Edit', 'mad-event-mailer' ); ?></a> <form method="post" style="display:inline" data-confirm-delete="<?php esc_attr_e( 'Are you sure you want to delete this subscriber?', 'mad-event-mailer' ); ?>"><?php self::nonce('delete_subscriber'); ?><input type="hidden" name="id" value="<?php echo (int)$r->id; ?>"><button class="button-link-delete"><?php esc_html_e( 'Delete', 'mad-event-mailer' ); ?></button></form></td></tr>
-        <?php endforeach; if(empty($rows)): ?><tr><td colspan="5"><?php esc_html_e( 'No subscribers found.', 'mad-event-mailer' ); ?></td></tr><?php endif; ?></tbody></table><?php self::wrap_end();
+        <table class="widefat striped"><thead><tr><th><?php esc_html_e( 'Email', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Name', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Subscribed Events', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Template', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Status', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Actions', 'mad-event-mailer' ); ?></th></tr></thead><tbody><?php foreach($rows as $r): $names=self::subscriber_event_labels($r->id); ?>
+        <tr><td><?php echo esc_html($r->email); ?></td><td><?php echo esc_html($r->name); ?></td><td><?php echo esc_html(implode(', ', $names)); ?></td><td><?php echo esc_html(self::template_name($r->template_id ?? 0, __( 'Use campaign template', 'mad-event-mailer' ))); ?></td><td><?php echo esc_html(self::status_label($r->status)); ?></td><td><a href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-subscribers&edit='.$r->id)); ?>"><?php esc_html_e( 'Edit', 'mad-event-mailer' ); ?></a> <form method="post" style="display:inline" data-confirm-delete="<?php esc_attr_e( 'Are you sure you want to delete this subscriber?', 'mad-event-mailer' ); ?>"><?php self::nonce('delete_subscriber'); ?><input type="hidden" name="id" value="<?php echo (int)$r->id; ?>"><button class="button-link-delete"><?php esc_html_e( 'Delete', 'mad-event-mailer' ); ?></button></form></td></tr>
+        <?php endforeach; if(empty($rows)): ?><tr><td colspan="6"><?php esc_html_e( 'No subscribers found.', 'mad-event-mailer' ); ?></td></tr><?php endif; ?></tbody></table><?php self::wrap_end();
     }
 
     public static function page_send() { self::render_admin_page('render_page_send'); }
@@ -1517,7 +1819,6 @@ class MADEVMA_Event_Mailer {
             __( 'Loaded campaign #%d settings. You can edit them and save another draft or create a new campaign.', 'mad-event-mailer' ),
             $loaded_campaign->id
         ), 'info');
-        $show_query = !empty($query_result);
         ?>
         <form method="get" class="madevma-mailer-card" style="margin-bottom:14px">
             <input type="hidden" name="page" value="madevma-mailer">
@@ -1536,8 +1837,8 @@ class MADEVMA_Event_Mailer {
         <table class="form-table"><tr><th><?php esc_html_e( 'Current Template', 'mad-event-mailer' ); ?></th><td><strong><?php echo $selected_template ? esc_html($selected_template->name) : esc_html__( 'No template selected', 'mad-event-mailer' ); ?></strong> <button type="submit" class="button" name="madevma_action" value="export_current_csv"><?php esc_html_e( 'Export Recipient CSV for Current Content', 'mad-event-mailer' ); ?></button><p class="madevma-mailer-help"><?php esc_html_e( 'Use the Template section above to change templates. CSV fields are generated from the current template and body content.', 'mad-event-mailer' ); ?></p></td></tr>
         <tr><th><?php esc_html_e( 'Email Subject', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="subject" id="subject" required value="<?php echo esc_attr($initial_subject); ?>"><p class="madevma-mailer-help"><?php esc_html_e( 'The subject automatically fills {{title}} and {{title1}}, so you do not need to set them separately.', 'mad-event-mailer' ); ?></p></td></tr>
         <tr><th><?php esc_html_e( 'Recipient Source', 'mad-event-mailer' ); ?></th><td><label><input type="radio" name="recipient_mode" value="event" checked> <?php esc_html_e( 'Send by event subscription list', 'mad-event-mailer' ); ?></label> &nbsp; <label><input type="radio" name="recipient_mode" value="csv"> <?php esc_html_e( 'Send using the uploaded CSV', 'mad-event-mailer' ); ?></label></td></tr>
-        <tr class="recipient-event"><th><?php esc_html_e( 'Recipient Event List', 'mad-event-mailer' ); ?></th><td><select name="event_id"><option value="0"><?php esc_html_e( 'All subscribed recipients', 'mad-event-mailer' ); ?></option><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): ?><option value="<?php echo esc_attr(self::event_language_value($e->id, $list_lang)); ?>"><?php echo esc_html(self::event_language_label($e, $list_lang)); ?></option><?php endforeach; endforeach; ?></select><p class="madevma-mailer-help"><?php esc_html_e( 'Admin recipient lists are separated by language; the public form still displays the event name and language choice.', 'mad-event-mailer' ); ?></p></td></tr>
-        <tr class="recipient-csv" style="display:none"><th><?php esc_html_e( 'Upload Recipient CSV', 'mad-event-mailer' ); ?></th><td><input type="file" name="recipient_csv" accept=".csv"><p class="madevma-mailer-help"><?php esc_html_e( 'Select a template, export its recipient CSV, fill in email, name, events, and extra variables, then upload it. The name column fills {{name}} and {{name1}}.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr class="recipient-event"><th><?php esc_html_e( 'Recipient Event List', 'mad-event-mailer' ); ?></th><td><select name="event_id"><option value="0"><?php esc_html_e( 'All subscribed recipients', 'mad-event-mailer' ); ?></option><?php foreach($events as $e): foreach(['zh','en'] as $list_lang): ?><option value="<?php echo esc_attr(self::event_language_value($e->id, $list_lang)); ?>"><?php echo esc_html(self::event_language_label($e, $list_lang)); ?></option><?php endforeach; endforeach; ?></select><p class="madevma-mailer-help"><?php esc_html_e( 'Admin recipient lists are separated by language. A recipient’s bound template is used first; the template selected above is the fallback for recipients without a binding.', 'mad-event-mailer' ); ?></p></td></tr>
+        <tr class="recipient-csv" style="display:none"><th><?php esc_html_e( 'Upload Recipient CSV', 'mad-event-mailer' ); ?></th><td><input type="file" name="recipient_csv" accept=".csv"><p class="madevma-mailer-help"><?php esc_html_e( 'Select a template, export its recipient CSV, fill in email, name, events, template, and extra variables, then upload it. A row-level template overrides the campaign template.', 'mad-event-mailer' ); ?></p></td></tr>
         <tr><th><?php esc_html_e( 'Body Content', 'mad-event-mailer' ); ?></th><td><div id="bodybox">
             <?php if (!$selected_template): ?>
                 <p class="description"><?php esc_html_e( 'Please select a template first.', 'mad-event-mailer' ); ?></p>
@@ -1625,6 +1926,9 @@ class MADEVMA_Event_Mailer {
             }
             wp_safe_redirect(add_query_arg('madevma_unsubscribed', '1', self::public_form_redirect_url($language))); exit;
         }
+        if (!is_email($email) || self::is_obvious_ad_recipient($email, $name)) {
+            wp_safe_redirect(add_query_arg('madevma_rejected', '1', self::public_form_redirect_url($language))); exit;
+        }
         self::upsert_subscriber($email, $name, array_map('absint', wp_unslash($_POST['events'] ?? [])), 'shortcode', true, $language);
         self::send_subscription_notice($email, $name, $language, 'subscribe');
         wp_safe_redirect(add_query_arg('madevma_registered', '1', self::public_form_redirect_url($language))); exit;
@@ -1651,6 +1955,7 @@ class MADEVMA_Event_Mailer {
         ?>
         <?php if (!empty(sanitize_text_field(wp_unslash($_GET['madevma_registered'] ?? '')))) echo '<div class="madevma-mailer-success">'.esc_html__( 'Subscription saved. Future event notifications will be sent to your email.', 'mad-event-mailer' ).'</div>'; ?>
         <?php if (!empty(sanitize_text_field(wp_unslash($_GET['madevma_unsubscribed'] ?? '')))) echo '<div class="madevma-mailer-warning">'.esc_html__( 'Unsubscription submitted. This email will no longer receive event notifications.', 'mad-event-mailer' ).'</div>'; ?>
+        <?php if (!empty(sanitize_text_field(wp_unslash($_GET['madevma_rejected'] ?? '')))) echo '<div class="madevma-mailer-warning">'.esc_html__( 'This recipient was discarded by the obvious-ad filter.', 'mad-event-mailer' ).'</div>'; ?>
         <div class="madevma-mailer-register-wrap"><div class="madevma-mailer-register-card">
             <div class="madevma-mailer-tabs">
                 <button type="button" class="madevma-mailer-tab <?php echo (!$show_unsub && !$show_query) ? 'active' : ''; ?>" data-target="subscribe"><?php esc_html_e( 'Subscribe', 'mad-event-mailer' ); ?></button>

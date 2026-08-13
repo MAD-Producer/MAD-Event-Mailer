@@ -14,7 +14,7 @@ MAD Event Mailer 是一个用于 WordPress 的活动通知邮件插件，适合�
 - **作者：** [MAD Producer Studio](https://github.com/MAD-Producer)
 - **许可证：** GPL v2
 - **Text Domain：** `mad-event-mailer`
-- **当前版本：** 2.3.1
+- **当前版本：** 2.4.0
 - **短代码：** `[madevma_email_register]`
 
 ## 主要功能
@@ -107,7 +107,12 @@ john@example.com,John,IFT IC #6,95,2,Good work
 可选字段：
 
 - `events`
+- `template`
 - 正文或模板中使用的自定义变量
+
+### 在线收件人编辑
+
+收件人页面新增了按行编辑的表格。每行可以绑定一个或多个活动语言分组，并绑定具体邮件模板；收件人自己的模板变量会在发送时合并到邮件内容中。明显的广告收件人会在前台订阅、手动添加、CSV 导入、在线编辑、创建发送任务和实际发送时被丢弃，已有数据也可以在收件人页面批量清理。
 
 ### 活动订阅列表
 
@@ -272,6 +277,14 @@ jane@example.com,Jane,IFT IC #6,88,5,Good structure
 - 插件用于活动通知和社群通知，不应用于垃圾邮件或未经许可的营销邮件。
 
 ## Release 说明
+
+### 2.4.0
+
+- 更新 WordPress.org 元数据，标记 `Tested up to: 7.1`。
+- 新增明显广告收件人过滤，覆盖收件人录入和邮件发送链路。
+- 新增在线收件人表格，支持活动语言分组和按收件人绑定邮件模板。
+- 新增按收件人保存模板变量，并同步发送逻辑使用绑定模板。
+- 收件人模板 CSV 新增 `template` 列。
 
 ### 2.3.1
 
