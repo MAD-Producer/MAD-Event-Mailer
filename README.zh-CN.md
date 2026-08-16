@@ -4,6 +4,10 @@
 
 [English README](./README.md)
 
+## 下载最新版
+
+GitHub Releases 已启用，用于发布版本信息。最新版正式插件请从官方 [WordPress.org 插件页面](https://wordpress.org/plugins/mad-event-mailer/) 下载。
+
 MAD Event Mailer 是一个用于 WordPress 的活动通知邮件插件，适合比赛、活动、投稿审核、成绩通知、赛程通知、结果通知等场景。
 
 插件支持 SMTP 发信、HTML 邮件模板、模板变量、CSV 收件人导入/导出、活动订阅列表、短代码前台订阅表单、批量发送和定时发送。2.3.1 起，后台及前台订阅界面以英文作为源码语言，并使用 WordPress 标准翻译系统。

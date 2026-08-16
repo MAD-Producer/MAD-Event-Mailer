@@ -3,6 +3,11 @@
 Administration access is limited to WordPress administrators and users assigned the **Mail Manager** (`邮箱管理员`) role.
 
 [中文文档 / Chinese README](./README.zh-CN.md)
+
+## Download
+
+GitHub Releases are enabled for release information. Please download the latest production plugin version from the official [WordPress.org plugin page](https://wordpress.org/plugins/mad-event-mailer/).
+
 <img width="1038" height="718" alt="Snipaste_2026-07-05_17-11-48" src="https://github.com/user-attachments/assets/c29ac4e3-7e4d-4483-b23e-dc0350f759e9" />
 
 
