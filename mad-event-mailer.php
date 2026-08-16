@@ -34,6 +34,7 @@ class MADEVMA_Event_Mailer {
         add_shortcode('madevma_email_register', [__CLASS__, 'shortcode_register']);
         add_action('init', [__CLASS__, 'handle_public_register']);
         add_action(self::CRON, [__CLASS__, 'process_campaigns']);
+        add_action('madevma_cleanup_ai_attachment', [__CLASS__, 'cleanup_ai_attachment']);
         add_filter('cron_schedules', [__CLASS__, 'cron_schedules']);
         add_action('init', [__CLASS__, 'maybe_upgrade'], 1);
         add_action('admin_enqueue_scripts', [__CLASS__, 'enqueue_admin_assets']);
@@ -215,6 +216,21 @@ class MADEVMA_Event_Mailer {
     private static function settings() { return wp_parse_args(get_option(self::OPT, []), [
         'host'=>'', 'port'=>'465', 'secure'=>'ssl', 'username'=>'', 'password'=>'', 'from_email'=>'', 'from_name'=>'', 'sender_name'=>'', 'reply_to'=>'', 'batch_size'=>30, 'logo_url'=>'', 'icon_url'=>'', 'register_page_url'=>'', 'register_page_url_zh'=>'', 'register_page_url_en'=>'', 'default_unsubscribe_button'=>1, 'default_unsubscribe_lang'=>'en'
     ]); }
+
+    private static function ai_settings() {
+        return wp_parse_args(get_option('madevma_ai_settings', []), [
+            'api_key' => '',
+            'model' => 'deepseek-v4-pro',
+        ]);
+    }
+
+    private static function ai_temp_dir() {
+        return trailingslashit(get_temp_dir()) . 'madevma-ai-temp';
+    }
+
+    private static function ai_preview_key() {
+        return 'madevma_ai_preview_' . absint(get_current_user_id());
+    }
 
     private static function looks_like_no_reply($name) {
         $normalized = strtolower(preg_replace('/[\s._-]+/', '', (string)$name));
@@ -430,6 +446,7 @@ class MADEVMA_Event_Mailer {
         add_submenu_page('madevma-mailer', __( 'Events', 'mad-event-mailer' ), __( 'Events', 'mad-event-mailer' ), self::CAP, 'madevma-mailer-events', [__CLASS__, 'page_events']);
         add_submenu_page('madevma-mailer', __( 'Subscribers', 'mad-event-mailer' ), __( 'Subscribers', 'mad-event-mailer' ), self::CAP, 'madevma-mailer-subscribers', [__CLASS__, 'page_subscribers']);
         add_submenu_page('madevma-mailer', __( 'Campaigns', 'mad-event-mailer' ), __( 'Campaigns', 'mad-event-mailer' ), self::CAP, 'madevma-mailer-campaigns', [__CLASS__, 'page_campaigns']);
+        add_submenu_page('madevma-mailer', __( 'AI Email Templates', 'mad-event-mailer' ), __( 'AI Email Templates', 'mad-event-mailer' ), self::CAP, 'madevma-mailer-ai-templates', [__CLASS__, 'page_ai_templates']);
         add_submenu_page('madevma-mailer', __( 'SMTP Settings', 'mad-event-mailer' ), __( 'SMTP Settings', 'mad-event-mailer' ), self::CAP, 'madevma-mailer-settings', [__CLASS__, 'page_settings']);
     }
 
@@ -774,6 +791,77 @@ class MADEVMA_Event_Mailer {
                 )
                 : __( 'Settings saved. When the sender name is empty, the WordPress site name will be used.', 'mad-event-mailer' )
             ));
+        }
+
+        if ($action === 'save_ai_settings') {
+            $current = self::ai_settings();
+            $api_key = trim((string)wp_unslash($_POST['deepseek_api_key'] ?? ''));
+            if (!empty($_POST['clear_deepseek_api_key'])) $api_key = '';
+            elseif ($api_key === '') $api_key = (string)($current['api_key'] ?? '');
+            $api_key = preg_replace('/[\r\n]+/', '', $api_key);
+            update_option('madevma_ai_settings', [
+                'api_key' => $api_key,
+                'model' => 'deepseek-v4-pro',
+            ]);
+            add_action('admin_notices', fn()=>self::notice(__( 'DeepSeek AI settings saved.', 'mad-event-mailer' )));
+        }
+
+        if ($action === 'generate_ai_template') {
+            $attachment = self::save_ai_attachment();
+            if (is_wp_error($attachment)) {
+                add_action('admin_notices', static function() use ($attachment) { self::notice($attachment->get_error_message(), 'error'); });
+            } else {
+                $result = self::generate_ai_template(
+                    sanitize_key(wp_unslash($_POST['ai_mode'] ?? 'custom')),
+                    absint(wp_unslash($_POST['base_template_id'] ?? 0)),
+                    sanitize_textarea_field(wp_unslash($_POST['ai_prompt'] ?? '')),
+                    sanitize_key(wp_unslash($_POST['ai_language'] ?? 'zh')),
+                    sanitize_text_field(wp_unslash($_POST['ai_name_hint'] ?? '')),
+                    $attachment
+                );
+                if (is_wp_error($result)) {
+                    add_action('admin_notices', static function() use ($result) { self::notice($result->get_error_message(), 'error'); });
+                } else {
+                    $result['token'] = wp_generate_password(32, false, false);
+                    set_transient(self::ai_preview_key(), $result, HOUR_IN_SECONDS);
+                    add_action('admin_notices', fn()=>self::notice(__( 'AI draft generated. Review the preview before saving it as a template.', 'mad-event-mailer' ), 'info'));
+                }
+            }
+        }
+
+        if ($action === 'save_ai_template') {
+            $preview = get_transient(self::ai_preview_key());
+            $token = sanitize_text_field(wp_unslash($_POST['ai_preview_token'] ?? ''));
+            $reviewed = isset($_POST['ai_review_confirm']) && '1' === (string)wp_unslash($_POST['ai_review_confirm']);
+            if (!is_array($preview) || empty($preview['token']) || $token === '' || !hash_equals((string)$preview['token'], $token)) {
+                add_action('admin_notices', fn()=>self::notice(__( 'The AI draft has expired. Generate it again before saving.', 'mad-event-mailer' ), 'error'));
+            } elseif (!$reviewed) {
+                add_action('admin_notices', fn()=>self::notice(__( 'Please confirm that you have manually reviewed the AI preview before saving it.', 'mad-event-mailer' ), 'error'));
+            } else {
+                $html = self::safe_email_html((string)($preview['html'] ?? ''));
+                $name = sanitize_text_field(wp_unslash($_POST['ai_template_name'] ?? ($preview['name'] ?? '')));
+                $subject = sanitize_text_field(wp_unslash($_POST['ai_template_subject'] ?? ($preview['subject'] ?? '{{title1}}')));
+                $summary = sanitize_textarea_field(wp_unslash($_POST['ai_template_summary'] ?? ($preview['summary'] ?? '')));
+                if ($name === '' || trim($html) === '') {
+                    add_action('admin_notices', fn()=>self::notice(__( 'A template name and generated HTML are required.', 'mad-event-mailer' ), 'error'));
+                } else {
+                    $inserted = $wpdb->insert(self::table('templates'), [
+                        'name' => $name,
+                        'subject' => $subject !== '' ? $subject : '{{title1}}',
+                        'summary' => $summary,
+                        'html' => $html,
+                        'variables' => wp_json_encode(self::extract_vars($html . ' ' . $subject)),
+                        'created_at' => self::now(),
+                        'updated_at' => self::now(),
+                    ]);
+                    if (false === $inserted) {
+                        add_action('admin_notices', fn()=>self::notice(__( 'The AI template could not be saved. Please check the database error or try again.', 'mad-event-mailer' ), 'error'));
+                    } else {
+                        delete_transient(self::ai_preview_key());
+                        add_action('admin_notices', fn()=>self::notice(__( 'AI template saved after manual review.', 'mad-event-mailer' )));
+                    }
+                }
+            }
         }
 
 
@@ -1221,6 +1309,83 @@ class MADEVMA_Event_Mailer {
     private static function get_templates() {
         global $wpdb;
         return $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY id DESC', self::table('templates') ) );
+    }
+
+    private static function get_general_templates() {
+        return array_values(array_filter(self::get_templates(), static function($template) {
+            return self::is_builtin_template($template->id);
+        }));
+    }
+
+    private static function ai_attachment_path_is_safe($path) {
+        $base = realpath(self::ai_temp_dir());
+        $real = realpath((string)$path);
+        if (!$base || !$real) return false;
+        $base = trailingslashit($base);
+        return strpos($real, $base) === 0 && is_file($real);
+    }
+
+    public static function cleanup_ai_attachment($path) {
+        $path = (string)$path;
+        if (self::ai_attachment_path_is_safe($path)) @unlink($path);
+    }
+
+    private static function cleanup_expired_ai_attachments() {
+        $dir = self::ai_temp_dir();
+        if (!is_dir($dir)) return;
+        $files = glob(trailingslashit($dir) . '*');
+        if (!is_array($files)) return;
+        $expired_before = time() - HOUR_IN_SECONDS;
+        foreach ($files as $file) {
+            if (is_file($file) && (int)@filemtime($file) <= $expired_before) self::cleanup_ai_attachment($file);
+        }
+    }
+
+    private static function save_ai_attachment() {
+        if (empty($_FILES['ai_attachment']) || !is_array($_FILES['ai_attachment'])) return null;
+        $file = wp_unslash($_FILES['ai_attachment']);
+        $error = isset($file['error']) ? (int)$file['error'] : UPLOAD_ERR_NO_FILE;
+        if ($error === UPLOAD_ERR_NO_FILE) return null;
+        if ($error !== UPLOAD_ERR_OK) return new WP_Error('madevma_ai_upload', __( 'The AI attachment could not be uploaded.', 'mad-event-mailer' ));
+        $size = isset($file['size']) ? (int)$file['size'] : 0;
+        if ($size <= 0 || $size > 2 * 1024 * 1024) return new WP_Error('madevma_ai_upload_size', __( 'AI attachments must be text files no larger than 2 MB.', 'mad-event-mailer' ));
+
+        $name = sanitize_file_name((string)($file['name'] ?? ''));
+        $extension = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        $mimes = [
+            'txt' => 'text/plain',
+            'md' => 'text/plain',
+            'csv' => 'text/csv',
+            'html' => 'text/html',
+            'htm' => 'text/html',
+            'json' => 'application/json',
+            'xml' => 'application/xml',
+        ];
+        if (!isset($mimes[$extension])) return new WP_Error('madevma_ai_upload_type', __( 'AI attachments currently support TXT, MD, CSV, HTML, JSON, and XML text files only.', 'mad-event-mailer' ));
+        if (empty($file['tmp_name']) || !is_uploaded_file($file['tmp_name'])) return new WP_Error('madevma_ai_upload', __( 'The AI attachment upload is invalid.', 'mad-event-mailer' ));
+
+        $temp_dir = self::ai_temp_dir();
+        if (!wp_mkdir_p($temp_dir)) return new WP_Error('madevma_ai_upload_dir', __( 'The temporary AI attachment directory could not be created.', 'mad-event-mailer' ));
+        $filename = wp_unique_filename($temp_dir, $name ?: 'attachment.' . $extension);
+        $path = trailingslashit($temp_dir) . $filename;
+        if (!move_uploaded_file($file['tmp_name'], $path)) return new WP_Error('madevma_ai_upload', __( 'The AI attachment could not be stored.', 'mad-event-mailer' ));
+        @chmod($path, 0600);
+        wp_schedule_single_event(time() + HOUR_IN_SECONDS, 'madevma_cleanup_ai_attachment', [$path]);
+        return [
+            'path' => $path,
+            'name' => $name ?: $filename,
+            'type' => $mimes[$extension],
+            'expires_at' => time() + HOUR_IN_SECONDS,
+        ];
+    }
+
+    private static function ai_attachment_text($attachment) {
+        if (!is_array($attachment) || empty($attachment['path']) || !self::ai_attachment_path_is_safe($attachment['path'])) return '';
+        $content = self::read_local_file($attachment['path']);
+        if ($content === '') return '';
+        $content = wp_check_invalid_utf8($content);
+        if (function_exists('mb_substr')) return mb_substr($content, 0, 50000, 'UTF-8');
+        return substr($content, 0, 50000);
     }
 
     private static function template_alias_key($value) {
@@ -1732,6 +1897,179 @@ class MADEVMA_Event_Mailer {
             $pending = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE campaign_id=%d AND status=%s', $log_table, $c->id, 'pending' ) );
             if (!$pending) $wpdb->update($campaign_table, ['status'=>'finished', 'sent_at'=>self::now()], ['id'=>$c->id]);
         }
+    }
+
+    private static function decode_ai_json($content) {
+        $content = trim((string)$content);
+        if (preg_match('/```(?:json)?\s*(.*?)```/is', $content, $matches)) $content = trim($matches[1]);
+        $decoded = json_decode($content, true);
+        if (is_array($decoded)) return $decoded;
+        $start = strpos($content, '{');
+        $end = strrpos($content, '}');
+        if ($start !== false && $end !== false && $end > $start) {
+            $decoded = json_decode(substr($content, $start, $end - $start + 1), true);
+            if (is_array($decoded)) return $decoded;
+        }
+        return null;
+    }
+
+    private static function generate_ai_template($mode, $base_template_id, $prompt, $language, $name_hint, $attachment = null) {
+        $settings = self::ai_settings();
+        $api_key = trim((string)($settings['api_key'] ?? ''));
+        if ($api_key === '') return new WP_Error('madevma_ai_key', __( 'Please save a DeepSeek API key before generating a template.', 'mad-event-mailer' ));
+
+        $mode = in_array($mode, ['general', 'custom'], true) ? $mode : 'custom';
+        $language = $language === 'en' ? 'en' : 'zh';
+        $prompt = trim((string)$prompt);
+        if ($prompt === '') return new WP_Error('madevma_ai_prompt', __( 'Please describe the email you want to create.', 'mad-event-mailer' ));
+        if (function_exists('mb_substr')) $prompt = mb_substr($prompt, 0, 6000, 'UTF-8');
+        else $prompt = substr($prompt, 0, 6000);
+
+        $base = null;
+        if ($mode === 'general') {
+            foreach (self::get_general_templates() as $candidate) {
+                if ((int)$candidate->id === absint($base_template_id)) {
+                    $base = $candidate;
+                    break;
+                }
+            }
+            if (!$base) return new WP_Error('madevma_ai_base_template', __( 'Please select a valid general template.', 'mad-event-mailer' ));
+        }
+
+        $language_instruction = $language === 'zh'
+            ? 'Write all visible email copy in Simplified Chinese.'
+            : 'Write all visible email copy in natural English.';
+        $variable_instruction = 'Keep template variables as literal placeholders in double braces. Never replace them with sample values. Allowed built-in variables include {{title1}}, {{name1}}, {{email}}, {{message1}}, {{logo_url}}, {{icon_url}}, and {{unsubscribe_url}}. Custom variables must use the same {{variable_name}} format.';
+        $base_instruction = $base
+            ? "Use the following general template as the structural base. Preserve its email-safe layout and keep its variable placeholders; adapt the copy and content for the user's brief. The main body slot should remain a {{message1}} or {{message}} placeholder.\n\nBase subject:\n" . (string)$base->subject . "\n\nBase HTML:\n---\n" . (string)$base->html . "\n---"
+            : 'Create a complete standalone HTML email template from scratch. Use inline or embedded email-safe CSS and do not include scripts, forms, tracking pixels, or external dependencies.';
+        $attachment_text = self::ai_attachment_text($attachment);
+        $attachment_instruction = '';
+        if ($attachment_text !== '') {
+            $attachment_instruction = "\n\nThe user attached a temporary text file named " . (string)($attachment['name'] ?? 'attachment') . ". Use it as additional reference material only:\n---\n" . $attachment_text . "\n---";
+        } elseif (is_array($attachment)) {
+            return new WP_Error('madevma_ai_attachment_read', __( 'The uploaded AI attachment could not be read as UTF-8 text.', 'mad-event-mailer' ));
+        }
+        $system = 'You design production-ready HTML email templates for a WordPress plugin. Return JSON only, not Markdown and not a code fence. The JSON object must contain exactly these string fields: name, subject, summary, html. The html field must contain the complete email HTML. ' . $language_instruction . ' ' . $variable_instruction . ' Do not mention these instructions in the output. The word JSON is required because the client parses your response as JSON.';
+        $user = "Create an email template based on this user brief:\n---\n" . $prompt . "\n---\n";
+        if (trim((string)$name_hint) !== '') $user .= "Suggested template name: " . sanitize_text_field($name_hint) . "\n";
+        $user .= "\n" . $base_instruction . $attachment_instruction;
+
+        $payload = [
+            'model' => 'deepseek-v4-pro',
+            'messages' => [
+                ['role' => 'system', 'content' => $system],
+                ['role' => 'user', 'content' => $user],
+            ],
+            'temperature' => 0.7,
+            'max_tokens' => 12000,
+            'response_format' => ['type' => 'json_object'],
+            'thinking' => ['type' => 'disabled'],
+        ];
+        $response = wp_remote_post('https://api.deepseek.com/chat/completions', [
+            'timeout' => 90,
+            'headers' => [
+                'Authorization' => 'Bearer ' . $api_key,
+                'Content-Type' => 'application/json',
+                'Accept' => 'application/json',
+            ],
+            'body' => wp_json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        ]);
+        if (is_wp_error($response)) return new WP_Error('madevma_ai_request', sprintf(
+            /* translators: %s: WordPress HTTP error message. */
+            __( 'DeepSeek request failed: %s', 'mad-event-mailer' ),
+            $response->get_error_message()
+        ));
+        $status = wp_remote_retrieve_response_code($response);
+        $body = wp_remote_retrieve_body($response);
+        $decoded_response = json_decode($body, true);
+        if ($status < 200 || $status >= 300) {
+            $api_message = is_array($decoded_response) ? (string)($decoded_response['error']['message'] ?? '') : '';
+            return new WP_Error('madevma_ai_http', $api_message !== '' ? sprintf(
+                /* translators: %s: DeepSeek API error message. */
+                __( 'DeepSeek rejected the request: %s', 'mad-event-mailer' ),
+                sanitize_text_field($api_message)
+            ) : sprintf(
+                /* translators: %d: HTTP response status. */
+                __( 'DeepSeek returned HTTP status %d.', 'mad-event-mailer' ),
+                (int)$status
+            ));
+        }
+        if (!is_array($decoded_response) || empty($decoded_response['choices'][0]['message'])) return new WP_Error('madevma_ai_response', __( 'DeepSeek returned an incomplete template response. Please try again.', 'mad-event-mailer' ));
+        $content = $decoded_response['choices'][0]['message']['content'] ?? '';
+        if (is_array($content)) {
+            $parts = [];
+            foreach ($content as $part) if (is_array($part) && isset($part['text'])) $parts[] = (string)$part['text'];
+            $content = implode('', $parts);
+        }
+        $data = self::decode_ai_json($content);
+        if (!is_array($data)) return new WP_Error('madevma_ai_json', __( 'DeepSeek returned an invalid template response. Please try again.', 'mad-event-mailer' ));
+        $html = self::safe_email_html((string)($data['html'] ?? ''));
+        if (trim($html) === '') return new WP_Error('madevma_ai_html', __( 'DeepSeek returned an empty email template. Please try again.', 'mad-event-mailer' ));
+        $name = sanitize_text_field((string)($data['name'] ?? $name_hint));
+        $subject = sanitize_text_field((string)($data['subject'] ?? '{{title1}}'));
+        $summary = sanitize_textarea_field((string)($data['summary'] ?? ''));
+        return [
+            'name' => $name !== '' ? $name : __( 'AI Generated Template', 'mad-event-mailer' ),
+            'subject' => $subject !== '' ? $subject : '{{title1}}',
+            'summary' => $summary,
+            'html' => $html,
+            'model' => 'deepseek-v4-pro',
+            'attachment_name' => is_array($attachment) ? (string)($attachment['name'] ?? '') : '',
+        ];
+    }
+
+    public static function page_ai_templates() { self::render_admin_page('render_page_ai_templates'); }
+    private static function render_page_ai_templates() {
+        $ai_settings = self::ai_settings();
+        self::cleanup_expired_ai_attachments();
+        $preview = get_transient(self::ai_preview_key());
+        $preview_vars = is_array($preview) ? self::extract_vars((string)($preview['html'] ?? '') . ' ' . (string)($preview['subject'] ?? '')) : [];
+        $general_templates = self::get_general_templates();
+        self::wrap_start(__( 'AI Email Templates', 'mad-event-mailer' ));
+        ?>
+        <div class="madevma-mailer-card madevma-ai-settings-card">
+            <h2><?php esc_html_e( 'DeepSeek V4 Pro Settings', 'mad-event-mailer' ); ?></h2>
+            <p class="madevma-mailer-help"><?php esc_html_e( 'The API key is stored in WordPress and sent only from the server to DeepSeek. It is never placed in browser JavaScript.', 'mad-event-mailer' ); ?></p>
+            <form method="post"><?php self::nonce('save_ai_settings'); ?>
+                <table class="form-table"><tr><th><?php esc_html_e( 'DeepSeek API Key', 'mad-event-mailer' ); ?></th><td><input class="regular-text" type="password" name="deepseek_api_key" autocomplete="new-password" placeholder="<?php echo esc_attr(!empty($ai_settings['api_key']) ? __( 'Saved; leave blank to keep it', 'mad-event-mailer' ) : __( 'Paste your DeepSeek API key', 'mad-event-mailer' )); ?>"> <label><input type="checkbox" name="clear_deepseek_api_key" value="1"> <?php esc_html_e( 'Clear saved key', 'mad-event-mailer' ); ?></label></td></tr>
+                <tr><th><?php esc_html_e( 'Model', 'mad-event-mailer' ); ?></th><td><code>deepseek-v4-pro</code><p class="description"><?php esc_html_e( 'The model is fixed to DeepSeek V4 Pro for this feature.', 'mad-event-mailer' ); ?></p></td></tr></table>
+                <?php submit_button(__( 'Save DeepSeek Settings', 'mad-event-mailer' ), 'secondary'); ?>
+            </form>
+        </div>
+        <div class="madevma-mailer-card">
+            <h2><?php esc_html_e( 'Create a Template with AI', 'mad-event-mailer' ); ?></h2>
+            <p class="madevma-mailer-help"><?php esc_html_e( 'Choose a general template to keep its layout, or create a completely custom HTML template. Variables remain as {{variable_name}} in the generated template and preview; they are not replaced with sample data.', 'mad-event-mailer' ); ?></p>
+            <form method="post" enctype="multipart/form-data" id="madevma-ai-template-form"><?php self::nonce('generate_ai_template'); ?>
+                <table class="form-table">
+                    <tr><th><?php esc_html_e( 'Creation Mode', 'mad-event-mailer' ); ?></th><td><select name="ai_mode" id="madevma-ai-mode"><option value="general"><?php esc_html_e( 'From a General Template', 'mad-event-mailer' ); ?></option><option value="custom"><?php esc_html_e( 'Completely Custom HTML', 'mad-event-mailer' ); ?></option></select></td></tr>
+                    <tr id="madevma-ai-base-row"><th><?php esc_html_e( 'General Template', 'mad-event-mailer' ); ?></th><td><select name="base_template_id" id="madevma-ai-base-template" <?php disabled(empty($general_templates)); ?> required><?php if (empty($general_templates)): ?><option value=""><?php esc_html_e( 'No general templates are available.', 'mad-event-mailer' ); ?></option><?php else: foreach ($general_templates as $template): ?><option value="<?php echo (int)$template->id; ?>"><?php echo esc_html($template->name); ?></option><?php endforeach; endif; ?></select></td></tr>
+                    <tr><th><?php esc_html_e( 'Output Language', 'mad-event-mailer' ); ?></th><td><select name="ai_language"><option value="zh"><?php esc_html_e( 'Simplified Chinese', 'mad-event-mailer' ); ?></option><option value="en"><?php esc_html_e( 'English', 'mad-event-mailer' ); ?></option></select></td></tr>
+                    <tr><th><?php esc_html_e( 'Template Name Hint', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="ai_name_hint" placeholder="<?php esc_attr_e( 'Optional; AI can generate a name', 'mad-event-mailer' ); ?>"></td></tr>
+                    <tr><th><?php esc_html_e( 'Prompt', 'mad-event-mailer' ); ?></th><td><textarea class="large-text" name="ai_prompt" rows="8" required placeholder="<?php esc_attr_e( 'Describe the event, recipient, tone, content, sections, and call to action you want in the email.', 'mad-event-mailer' ); ?>"></textarea><p class="description"><?php esc_html_e( 'Describe the email in natural language. The generated result is shown for review before it is saved as a reusable template.', 'mad-event-mailer' ); ?></p></td></tr>
+                    <tr><th><?php esc_html_e( 'Reference Attachment', 'mad-event-mailer' ); ?></th><td><input type="file" name="ai_attachment" accept=".txt,.md,.csv,.html,.htm,.json,.xml"><p class="description"><?php esc_html_e( 'Optional text reference: TXT, MD, CSV, HTML, JSON, or XML, up to 2 MB. The file is stored in a private temporary WordPress directory, sent as reference context to DeepSeek, and deleted after one hour; it is not added to the Media Library.', 'mad-event-mailer' ); ?></p></td></tr>
+                </table>
+                <?php submit_button(__( 'Generate and Preview', 'mad-event-mailer' ), 'primary'); ?>
+            </form>
+        </div>
+        <?php if (is_array($preview) && !empty($preview['token']) && !empty($preview['html'])): ?>
+            <div class="madevma-mailer-card madevma-ai-preview-card">
+                <h2><?php esc_html_e( 'Generated Template Preview', 'mad-event-mailer' ); ?></h2>
+                <p class="madevma-mailer-help"><?php esc_html_e( 'Static preview only: variables are intentionally shown as {{variable_name}} and no email is sent.', 'mad-event-mailer' ); ?><?php if (!empty($preview['attachment_name'])): ?> <?php echo esc_html(sprintf(__( 'Reference attachment: %s. It will be removed after one hour.', 'mad-event-mailer' ), $preview['attachment_name'])); ?><?php endif; ?></p>
+                <p class="madevma-mailer-help"><strong><?php esc_html_e( 'Detected variables:', 'mad-event-mailer' ); ?></strong> <?php if ($preview_vars): foreach ($preview_vars as $variable): ?><code>{{<?php echo esc_html($variable); ?>}}</code> <?php endforeach; else: esc_html_e( 'None', 'mad-event-mailer' ); endif; ?></p>
+                <iframe sandbox="" title="<?php esc_attr_e( 'Generated email template preview', 'mad-event-mailer' ); ?>" srcdoc="<?php echo esc_attr(self::safe_email_html((string)$preview['html'])); ?>"></iframe>
+                <details class="madevma-ai-source"><summary><?php esc_html_e( 'View generated HTML', 'mad-event-mailer' ); ?></summary><textarea class="large-text code" rows="14" readonly><?php echo esc_textarea($preview['html']); ?></textarea></details>
+                <h3><?php esc_html_e( 'Save as Reusable Template', 'mad-event-mailer' ); ?></h3>
+                <form method="post"><?php self::nonce('save_ai_template'); ?><input type="hidden" name="ai_preview_token" value="<?php echo esc_attr($preview['token']); ?>">
+                    <table class="form-table"><tr><th><?php esc_html_e( 'Template Name', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="ai_template_name" required value="<?php echo esc_attr($preview['name'] ?? ''); ?>"></td></tr>
+                    <tr><th><?php esc_html_e( 'Default Email Subject', 'mad-event-mailer' ); ?></th><td><input class="regular-text" name="ai_template_subject" value="<?php echo esc_attr($preview['subject'] ?? '{{title1}}'); ?>"></td></tr>
+                    <tr><th><?php esc_html_e( 'Email Summary', 'mad-event-mailer' ); ?></th><td><textarea class="large-text" name="ai_template_summary" rows="3"><?php echo esc_textarea($preview['summary'] ?? ''); ?></textarea></td></tr>
+                    <tr><th><?php esc_html_e( 'Human Review', 'mad-event-mailer' ); ?></th><td><label><input type="checkbox" name="ai_review_confirm" value="1" required> <?php esc_html_e( 'I have reviewed the rendered preview, variables, links, and content, and approve saving this AI draft as a reusable template.', 'mad-event-mailer' ); ?></label></td></tr></table>
+                    <?php submit_button(__( 'Confirm Review and Save AI Template', 'mad-event-mailer' ), 'primary'); ?>
+                </form>
+            </div>
+        <?php endif; ?>
+        <?php self::wrap_end();
     }
 
     public static function page_settings() { self::render_admin_page('render_page_settings'); }
