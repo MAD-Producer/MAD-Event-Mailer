@@ -4,7 +4,7 @@ Tags: email, smtp, newsletter, event, csv
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.4.1
+Stable tag: 2.4.2
 License: GPL v2
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -43,6 +43,11 @@ Yes. The Subscribers screen includes an online row editor. Each row must be boun
 The importer, online editor, public subscription form, and sending pipeline reject clearly promotional rows, such as link-heavy cryptocurrency advertisements. Existing rows can be reviewed and discarded from the Subscribers screen.
 
 == Changelog ==
+
+= 2.4.2 =
+* Inlined template CSS before delivery so Gmail and other clients that remove style blocks retain the email layout.
+* Explicitly configures outgoing messages as UTF-8 HTML through PHPMailer.
+* Restricts Quick Create to the two built-in Chinese and English general templates so previously created content cannot be inherited accidentally.
 
 = 2.4.1 =
 * Replaced online recipient JSON editing with template-driven variable fields.
