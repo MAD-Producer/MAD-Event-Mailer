@@ -15,3 +15,17 @@
 .madevma-mailer-preview-box iframe{width:100%;height:650px;border:1px solid #dcdcde;border-radius:8px;background:#fff}
 .madevma-mailer-preview-actions{display:flex;gap:8px;align-items:center}
 .madevma-mailer-var-label{display:inline-block;margin-bottom:6px}
+.madevma-recipient-grid-wrap{overflow-x:auto;max-width:100%;margin:12px 0}
+.madevma-recipient-grid{min-width:1360px}
+.madevma-recipient-grid th,.madevma-recipient-grid td{vertical-align:top;padding:8px}
+.madevma-recipient-grid input,.madevma-recipient-grid select{min-width:120px;max-width:220px}
+.madevma-recipient-grid input[type=email]{min-width:210px}
+.madevma-recipient-grid select[data-recipient-template]{min-width:210px}
+.madevma-recipient-variables-cell{min-width:320px}
+.madevma-recipient-variable-fields{display:flex;flex-direction:column;gap:8px;min-width:300px}
+.madevma-recipient-variable-field{display:grid;grid-template-columns:110px minmax(180px,1fr);gap:8px;align-items:start}
+.madevma-recipient-variable-field code{display:inline-block;margin-top:6px;white-space:nowrap}
+.madevma-recipient-variable-field textarea{width:100%;min-width:180px;max-width:none;box-sizing:border-box;resize:vertical}
+.madevma-recipient-variable-empty{margin:6px 0;max-width:300px}
+.madevma-recipient-automatic-vars{margin:0 0 4px;line-height:1.7;max-width:300px}
+.madevma-recipient-automatic-vars code{margin-right:4px}

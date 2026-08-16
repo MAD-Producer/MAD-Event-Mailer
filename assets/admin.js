@@ -86,6 +86,146 @@
             });
         });
     }
+    function bindRecipientGrid() {
+        var form = byId('madevma-recipient-grid-form');
+        if (!form) return;
+        var body = form.querySelector('tbody'), add = byId('madevma-add-recipient-row');
+        if (!body) return;
+        var recipientTemplateFields = config.recipientTemplateFields || {};
+
+        function nextIndex() {
+            var max = -1;
+            body.querySelectorAll('[name]').forEach(function (field) {
+                var match = field.name.match(/recipient_grid\[(\d+)\]/);
+                if (match) max = Math.max(max, parseInt(match[1], 10));
+            });
+            return max + 1;
+        }
+
+        function rowIndex(row) {
+            var field = row.querySelector('[name*="recipient_grid["]');
+            var match = field && field.name.match(/recipient_grid\[(\d+)\]/);
+            return match ? parseInt(match[1], 10) : 0;
+        }
+
+        function templateSelect(row) {
+            return row.querySelector('[data-recipient-template]');
+        }
+
+        function collectVariableValues(row) {
+            var values = row._recipientVariableCache || {};
+            row.querySelectorAll('[data-recipient-variable]').forEach(function (field) {
+                values[field.getAttribute('data-recipient-variable')] = field.value || '';
+            });
+            return values;
+        }
+
+        function addVariableMessage(box, message) {
+            var text = document.createElement('p');
+            text.className = 'description madevma-recipient-variable-empty';
+            text.textContent = message;
+            box.appendChild(text);
+        }
+
+        function renderVariableFields(row, values) {
+            var box = row.querySelector('[data-recipient-variable-fields]'), select = templateSelect(row);
+            if (!box) return;
+            var templateId = select && select.value ? String(select.value) : '';
+            var fieldSet = recipientTemplateFields[templateId] || {};
+            var variables = Array.isArray(fieldSet.editable) ? fieldSet.editable : [];
+            var automatic = Array.isArray(fieldSet.automatic) ? fieldSet.automatic : [];
+            var rowNumber = rowIndex(row);
+            row._recipientVariableCache = values || {};
+            box.textContent = '';
+            if (!templateId) {
+                addVariableMessage(box, config.recipientSelectTemplate || 'Select an email template to load its variables.');
+                return;
+            }
+            if (automatic.length) {
+                var automaticMessage = document.createElement('p');
+                automaticMessage.className = 'description madevma-recipient-automatic-vars';
+                automaticMessage.appendChild(document.createTextNode((config.recipientAutomaticLabel || 'Automatically filled by the template system:') + ' '));
+                automatic.forEach(function (variable) {
+                    var code = document.createElement('code');
+                    code.textContent = '{{' + variable + '}}';
+                    automaticMessage.appendChild(code);
+                    automaticMessage.appendChild(document.createTextNode(' '));
+                });
+                box.appendChild(automaticMessage);
+            }
+            if (!variables.length) {
+                addVariableMessage(box, config.recipientNoVars || 'This template has no editable recipient variables. System values are filled automatically.');
+                return;
+            }
+            variables.forEach(function (variable) {
+                var label = document.createElement('label');
+                label.className = 'madevma-recipient-variable-field';
+                var caption = document.createElement('span');
+                var code = document.createElement('code');
+                var textarea = document.createElement('textarea');
+                code.textContent = '{{' + variable + '}}';
+                textarea.rows = 2;
+                textarea.name = 'recipient_grid[' + rowNumber + '][variables][' + variable + ']';
+                textarea.setAttribute('data-recipient-variable', variable);
+                textarea.value = values && Object.prototype.hasOwnProperty.call(values, variable) ? values[variable] : '';
+                caption.appendChild(code);
+                label.appendChild(caption);
+                label.appendChild(textarea);
+                box.appendChild(label);
+            });
+        }
+
+        function clearRow(row, index) {
+            row.querySelectorAll('[name]').forEach(function (field) {
+                field.name = field.name.replace(/recipient_grid\[\d+\]/, 'recipient_grid[' + index + ']');
+                var suffix = field.name.replace(/^recipient_grid\[\d+\]/, '');
+                if (suffix === '[id]') field.value = '0';
+                else if (suffix === '[status]') field.value = 'subscribed';
+                else if (suffix === '[template_id]') field.value = '';
+                else if (suffix === '[email]' || suffix === '[name]' || suffix === '[events]' || suffix.indexOf('[variables]') === 0) field.value = '';
+            });
+            var select = templateSelect(row);
+            if (select && select.options.length > 1) select.value = select.options[1].value;
+            renderVariableFields(row, {});
+        }
+
+        body.querySelectorAll('tr').forEach(function (row) { renderVariableFields(row, collectVariableValues(row)); });
+        body.addEventListener('change', function (event) {
+            if (!event.target.matches('[data-recipient-template]')) return;
+            var row = event.target.closest('tr');
+            if (row) renderVariableFields(row, collectVariableValues(row));
+        });
+
+        if (add) add.addEventListener('click', function () {
+            var source = body.querySelector('tr');
+            if (!source) return;
+            var row = source.cloneNode(true);
+            clearRow(row, nextIndex());
+            body.appendChild(row);
+        });
+
+        body.addEventListener('click', function (event) {
+            var button = event.target.closest('.madevma-remove-recipient-row');
+            if (!button) return;
+            var row = button.closest('tr');
+            if (!row) return;
+            if (body.querySelectorAll('tr').length > 1) row.remove();
+            else clearRow(row, nextIndex());
+        });
+
+        form.addEventListener('submit', function (event) {
+            var missingTemplate = false;
+            body.querySelectorAll('tr').forEach(function (row) {
+                var email = row.querySelector('input[type="email"]'), name = row.querySelector('input[name$="[name]"]'), select = templateSelect(row);
+                if (((email && email.value) || '').trim() === '' && ((name && name.value) || '').trim() === '') return;
+                if (!select || !select.value) missingTemplate = true;
+            });
+            if (missingTemplate) {
+                event.preventDefault();
+                window.alert(config.recipientTemplateRequired || 'Each recipient row must have an email template. Select a template before saving.');
+            }
+        });
+    }
 
     window.madevmaCloseModal = function () {
         var modal = byId('previewModal'), frame = byId('previewFrame');
@@ -140,6 +280,6 @@
         window.setTimeout(refreshVars, 600);
     }
 
-    function ready() { bindTemplatePage(); bindConfirmations(); bindEventOrder(); bindSendPage(); }
+    function ready() { bindTemplatePage(); bindConfirmations(); bindEventOrder(); bindRecipientGrid(); bindSendPage(); }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready); else ready();
 }());

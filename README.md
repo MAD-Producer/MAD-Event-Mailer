@@ -16,7 +16,7 @@ The plugin was created for event operation scenarios such as submission notices,
 - **Author:** [MAD Producer Studio](https://github.com/MAD-Producer)
 - **License:** GPL v2
 - **Text domain:** `mad-event-mailer`
-- **Current version:** 2.3.1
+- **Current version:** 2.4.1
 - **Shortcode:** `[madevma_email_register]`
 
 ## Main Features
@@ -111,7 +111,14 @@ Required fields:
 Optional fields:
 
 - `events`
+- `template`
 - any custom variables used in the selected template or body content
+
+### Online Recipient Editor
+
+The Subscribers screen also provides a row-by-row editor. Each row must be bound to one specific email template and can be assigned to one or more event-language recipient lists. Selecting a template automatically detects its editable variables and creates ordinary fields for that row; no JSON editing is required. The bound template and values are merged into the campaign before rendering.
+
+Clearly promotional advertising rows are rejected by the recipient filter during public subscription, manual entry, CSV import, online editing, campaign preparation, and sending. Existing rows can be cleaned from the Subscribers screen.
 
 ### Event-Based Subscription Lists
 
@@ -292,6 +299,21 @@ Table names may vary depending on the WordPress database prefix.
 - For better deliverability, configure SPF, DKIM, and DMARC for the sender domain.
 
 ## Release Notes
+
+### 2.4.1
+
+- Replaced online recipient JSON editing with template-driven variable fields.
+- Made an email template mandatory for every online recipient row.
+- Automatically detects editable variables from the selected template and rebuilds the row fields when the template changes.
+- Reports online rows skipped because their template binding or recipient data is invalid.
+
+### 2.4.0
+
+- Updated WordPress.org metadata to `Tested up to: 7.1`.
+- Added obvious-advertisement recipient filtering across recipient intake and delivery.
+- Added online recipient row editing with event-language grouping and per-recipient template binding.
+- Added per-recipient template variables and synchronized campaign delivery with the bound template.
+- Added the `template` column to recipient CSV templates and exports.
 
 ### 2.3.1
 
