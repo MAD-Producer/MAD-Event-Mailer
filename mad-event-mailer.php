@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MAD Event Mailer
  * Description: An HTML email delivery plugin for event notifications. Supports SMTP, template variables, CSV recipients, event subscriptions, shortcode registration, batch sending and scheduled sending.
- * Version: 2.4.0
+ * Version: 2.4.1
  * Requires at least: 6.2
  * Author: MAD Producer Studio
  * Author URI: https://github.com/MAD-Producer
@@ -14,7 +14,7 @@
 if (!defined('ABSPATH')) exit;
 
 class MADEVMA_Event_Mailer {
-    const VERSION = '2.4.0';
+    const VERSION = '2.4.1';
     const OPT = 'madevma_settings';
     const CRON = 'madevma_process_campaigns';
     const CAP = 'madevma_manage_mailer';
@@ -442,8 +442,13 @@ class MADEVMA_Event_Mailer {
             'ajaxUrl' => admin_url('admin-ajax.php'),
             'previewNonce' => wp_create_nonce('madevma_preview_send'),
             'templateVars' => self::admin_selected_template_vars(),
+            'recipientTemplateFields' => self::recipient_template_field_map(),
             'confirmDelete' => __( 'Are you sure you want to delete this?', 'mad-event-mailer' ),
             'varPlaceholder' => __( 'Enter a global default value here. If the CSV has a matching column, each recipient’s own value takes priority.', 'mad-event-mailer' ),
+            'recipientTemplateRequired' => __( 'Each recipient row must have an email template. Select a template before saving.', 'mad-event-mailer' ),
+            'recipientSelectTemplate' => __( 'Select an email template to load its variables.', 'mad-event-mailer' ),
+            'recipientNoVars' => __( 'This template has no editable recipient variables. System values are filled automatically.', 'mad-event-mailer' ),
+            'recipientAutomaticLabel' => __( 'Automatically filled by the template system:', 'mad-event-mailer' ),
             'previewTitle' => __( 'Preview', 'mad-event-mailer' ),
             'previewStatus' => __( 'Static preview: variables remain as {{variable_name}} and no email will be sent.', 'mad-event-mailer' ),
             'testTitle' => __( 'Send Test Email', 'mad-event-mailer' ),
@@ -868,7 +873,14 @@ class MADEVMA_Event_Mailer {
                     (int)$result['saved'],
                     (int)$result['discarded']
                 );
-                self::notice($message, !empty($result['discarded']) ? 'warning' : 'success');
+                if (!empty($result['invalid'])) {
+                    $message .= ' ' . sprintf(
+                        /* translators: %d: number of rows not saved because they were incomplete. */
+                        _n( '%d row was not saved because its template binding or recipient data is invalid.', '%d rows were not saved because their template binding or recipient data is invalid.', (int)$result['invalid'], 'mad-event-mailer' ),
+                        (int)$result['invalid']
+                    );
+                }
+                self::notice($message, (!empty($result['discarded']) || !empty($result['invalid'])) ? 'warning' : 'success');
             });
         }
 
@@ -1267,6 +1279,23 @@ class MADEVMA_Event_Mailer {
         return $vars;
     }
 
+    private static function recipient_template_field_map($templates = null) {
+        $templates = is_array($templates) ? $templates : self::get_templates();
+        $map = [];
+        foreach ($templates as $template) {
+            $template_id = (int)$template->id;
+            global $wpdb;
+            $stored_template = $wpdb->get_row($wpdb->prepare('SELECT html, subject FROM %i WHERE id=%d', self::table('templates'), $template_id));
+            $all_vars = $stored_template ? self::extract_vars((string)$stored_template->html . ' ' . (string)$stored_template->subject) : [];
+            $editable = array_values(array_diff(self::editable_vars($all_vars), self::body_vars()));
+            $map[(string)$template_id] = [
+                'editable' => $editable,
+                'automatic' => array_values(array_diff($all_vars, $editable)),
+            ];
+        }
+        return $map;
+    }
+
     private static function sanitize_recipient_variables($template_id, $values) {
         if (!is_array($values)) return [];
         $allowed = array_flip(self::recipient_template_vars($template_id));
@@ -1428,6 +1457,7 @@ class MADEVMA_Event_Mailer {
         $rows = isset($_POST['recipient_grid']) && is_array($_POST['recipient_grid']) ? wp_unslash($_POST['recipient_grid']) : [];
         $saved = 0;
         $discarded = 0;
+        $invalid = 0;
         foreach ($rows as $row) {
             if (!is_array($row)) continue;
             $email = sanitize_email($row['email'] ?? '');
@@ -1435,15 +1465,44 @@ class MADEVMA_Event_Mailer {
             if ($email === '' && $name === '') continue;
             $event_lists = self::parse_recipient_list_tokens($row['events'] ?? '', self::recipient_list_map(self::get_events(false)));
             $template_id = self::resolve_template_id($row['template_id'] ?? '0');
-            $variables_json = sanitize_text_field($row['variables_json'] ?? '');
-            $variables_data = json_decode($variables_json, true);
-            $variables = self::sanitize_recipient_variables($template_id, is_array($variables_data) ? $variables_data : []);
+            if (!$template_id) {
+                $invalid++;
+                continue;
+            }
+            $variables_data = isset($row['variables']) && is_array($row['variables']) ? $row['variables'] : [];
+            $variables = self::sanitize_recipient_variables($template_id, $variables_data);
             $status = in_array(sanitize_text_field($row['status'] ?? 'subscribed'), ['subscribed','unsubscribed'], true) ? sanitize_text_field($row['status']) : 'subscribed';
             $result = self::save_subscriber_record(absint($row['id'] ?? 0), $email, $name, $status, $event_lists, $template_id, $variables);
             if (!empty($result['discarded'])) $discarded++;
             elseif (!empty($result['id'])) $saved++;
+            else $invalid++;
         }
-        return ['saved'=>$saved, 'discarded'=>$discarded];
+        return ['saved'=>$saved, 'discarded'=>$discarded, 'invalid'=>$invalid];
+    }
+
+    private static function render_recipient_grid_variables($grid_index, $template_id, $saved_vars = [], $field_map = null) {
+        $template_id = absint($template_id);
+        $fields = is_array($field_map) && array_key_exists((string)$template_id, $field_map)
+            ? $field_map[(string)$template_id]
+            : ['editable'=>self::recipient_template_vars($template_id), 'automatic'=>[]];
+        $variables = is_array($fields['editable'] ?? null) ? $fields['editable'] : [];
+        $automatic = is_array($fields['automatic'] ?? null) ? $fields['automatic'] : [];
+        echo '<div class="madevma-recipient-variable-fields" data-recipient-variable-fields>';
+        if (!$template_id) {
+            echo '<p class="description madevma-recipient-variable-empty">'.esc_html__( 'Select an email template to load its variables.', 'mad-event-mailer' ).'</p>';
+        } else {
+            if (!empty($automatic)) {
+                echo '<p class="description madevma-recipient-automatic-vars">'.esc_html__( 'Automatically filled by the template system:', 'mad-event-mailer' ).' ';
+                foreach ($automatic as $variable) echo '<code>{{'.esc_html($variable).'}}</code> ';
+                echo '</p>';
+            }
+            if (empty($variables)) echo '<p class="description madevma-recipient-variable-empty">'.esc_html__( 'This template has no editable recipient variables. System values are filled automatically.', 'mad-event-mailer' ).'</p>';
+            foreach ($variables as $variable) {
+                $field_name = 'recipient_grid['.(int)$grid_index.'][variables]['.$variable.']';
+                echo '<label class="madevma-recipient-variable-field"><span><code>{{'.esc_html($variable).'}}</code></span><textarea rows="2" name="'.esc_attr($field_name).'" data-recipient-variable="'.esc_attr($variable).'">'.esc_textarea($saved_vars[$variable] ?? '').'</textarea></label>';
+            }
+        }
+        echo '</div>';
     }
 
     private static function subscriber_filter_parts($value) {
@@ -1753,7 +1812,14 @@ class MADEVMA_Event_Mailer {
         global $wpdb;
         $events = self::get_events(false);
         $templates = self::get_templates();
-        $recipient_vars = self::all_recipient_template_vars($templates);
+        $recipient_template_field_map = self::recipient_template_field_map($templates);
+        $recipient_template_var_map = [];
+        foreach ($recipient_template_field_map as $template_id => $fields) $recipient_template_var_map[$template_id] = $fields['editable'] ?? [];
+        $recipient_vars = [];
+        foreach ($recipient_template_var_map as $variables) {
+            foreach ($variables as $variable) if (!in_array($variable, $recipient_vars, true)) $recipient_vars[] = $variable;
+        }
+        $empty_template_id = !empty($templates) ? (int)$templates[0]->id : 0;
         $edit_id = absint(wp_unslash($_GET['edit'] ?? 0));
         $edit = $edit_id ? $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM %i WHERE id=%d', self::table('subscribers'), $edit_id ) ) : null;
         $selected_lists = $edit ? self::subscriber_event_language_values($edit->id) : [];
@@ -1772,11 +1838,11 @@ class MADEVMA_Event_Mailer {
             <?php submit_button($edit ? __( 'Update Subscriber', 'mad-event-mailer' ) : __( 'Save', 'mad-event-mailer' ), 'secondary', 'submit', false); ?> <?php if($edit): ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=madevma-mailer-subscribers')); ?>"><?php esc_html_e( 'Cancel Editing', 'mad-event-mailer' ); ?></a><?php endif; ?>
         </form>
         <h2><?php esc_html_e( 'Online Recipient Editor', 'mad-event-mailer' ); ?></h2>
-        <p><?php esc_html_e( 'Add or edit one recipient per row. Select the event lists and the email template for each row; custom template variables are entered in the final column.', 'mad-event-mailer' ); ?></p>
+        <p><?php esc_html_e( 'Add or edit one recipient per row. Every row must be bound to one email template. After you select a template, its editable variables are detected automatically and appear as normal fields; no JSON is required.', 'mad-event-mailer' ); ?></p>
         <form method="post" id="madevma-recipient-grid-form"><?php self::nonce('save_recipient_grid'); ?>
-            <div class="madevma-recipient-grid-wrap"><table class="widefat striped madevma-recipient-grid"><thead><tr><th><?php esc_html_e( 'Email', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Name', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Event Lists', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Template', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Status', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Variables (JSON)', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Remove', 'mad-event-mailer' ); ?></th></tr></thead><tbody>
-            <?php $grid_rows = array_slice($rows, 0, 20); if (empty($grid_rows)) $grid_rows = [(object)['id'=>0,'email'=>'','name'=>'','status'=>'subscribed','template_id'=>0,'variables'=>'']]; foreach ($grid_rows as $grid_index => $row): $saved_vars = json_decode($row->variables ?? '', true) ?: []; ?>
-            <tr><td><input type="hidden" name="recipient_grid[<?php echo (int)$grid_index; ?>][id]" value="<?php echo (int)$row->id; ?>"><input type="email" name="recipient_grid[<?php echo (int)$grid_index; ?>][email]" value="<?php echo esc_attr($row->email); ?>"></td><td><input type="text" name="recipient_grid[<?php echo (int)$grid_index; ?>][name]" value="<?php echo esc_attr($row->name); ?>"></td><td><input type="text" name="recipient_grid[<?php echo (int)$grid_index; ?>][events]" value="<?php echo esc_attr(implode('; ', self::subscriber_event_labels($row->id))); ?>" placeholder="Event English, Event Chinese"></td><td><select name="recipient_grid[<?php echo (int)$grid_index; ?>][template_id]"><option value="0"><?php esc_html_e( 'Use campaign template', 'mad-event-mailer' ); ?></option><?php foreach($templates as $template): ?><option value="<?php echo (int)$template->id; ?>" <?php selected((int)$row->template_id, (int)$template->id); ?>><?php echo esc_html($template->name); ?></option><?php endforeach; ?></select></td><td><select name="recipient_grid[<?php echo (int)$grid_index; ?>][status]"><option value="subscribed" <?php selected($row->status, 'subscribed'); ?>><?php esc_html_e( 'Subscribed', 'mad-event-mailer' ); ?></option><option value="unsubscribed" <?php selected($row->status, 'unsubscribed'); ?>><?php esc_html_e( 'Unsubscribed', 'mad-event-mailer' ); ?></option></select></td><td><input type="text" name="recipient_grid[<?php echo (int)$grid_index; ?>][variables_json]" value="<?php echo esc_attr(wp_json_encode($saved_vars)); ?>" placeholder="{&quot;score&quot;:&quot;95&quot;}"></td><td><button type="button" class="button-link-delete madevma-remove-recipient-row"><?php esc_html_e( 'Remove', 'mad-event-mailer' ); ?></button></td></tr>
+            <div class="madevma-recipient-grid-wrap"><table class="widefat striped madevma-recipient-grid"><thead><tr><th><?php esc_html_e( 'Email', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Name', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Event Lists', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Template (required)', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Status', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Template Variables', 'mad-event-mailer' ); ?></th><th><?php esc_html_e( 'Remove', 'mad-event-mailer' ); ?></th></tr></thead><tbody>
+            <?php $grid_rows = array_slice($rows, 0, 20); if (empty($grid_rows)) $grid_rows = [(object)['id'=>0,'email'=>'','name'=>'','status'=>'subscribed','template_id'=>$empty_template_id,'variables'=>'']]; foreach ($grid_rows as $grid_index => $row): $saved_vars = json_decode($row->variables ?? '', true); $saved_vars = is_array($saved_vars) ? $saved_vars : []; ?>
+            <tr data-recipient-row><td><input type="hidden" name="recipient_grid[<?php echo (int)$grid_index; ?>][id]" value="<?php echo (int)$row->id; ?>"><input type="email" name="recipient_grid[<?php echo (int)$grid_index; ?>][email]" value="<?php echo esc_attr($row->email); ?>"></td><td><input type="text" name="recipient_grid[<?php echo (int)$grid_index; ?>][name]" value="<?php echo esc_attr($row->name); ?>"></td><td><input type="text" name="recipient_grid[<?php echo (int)$grid_index; ?>][events]" value="<?php echo esc_attr(implode('; ', self::subscriber_event_labels($row->id))); ?>" placeholder="Event English, Event Chinese"></td><td><select name="recipient_grid[<?php echo (int)$grid_index; ?>][template_id]" data-recipient-template<?php echo !empty($templates) ? ' required' : ''; ?>><option value=""><?php esc_html_e( 'Select a template', 'mad-event-mailer' ); ?></option><?php foreach($templates as $template): ?><option value="<?php echo (int)$template->id; ?>" <?php selected((int)$row->template_id, (int)$template->id); ?>><?php echo esc_html($template->name); ?></option><?php endforeach; ?></select></td><td><select name="recipient_grid[<?php echo (int)$grid_index; ?>][status]"><option value="subscribed" <?php selected($row->status, 'subscribed'); ?>><?php esc_html_e( 'Subscribed', 'mad-event-mailer' ); ?></option><option value="unsubscribed" <?php selected($row->status, 'unsubscribed'); ?>><?php esc_html_e( 'Unsubscribed', 'mad-event-mailer' ); ?></option></select></td><td class="madevma-recipient-variables-cell"><?php self::render_recipient_grid_variables($grid_index, $row->template_id ?? 0, $saved_vars, $recipient_template_field_map); ?></td><td><button type="button" class="button-link-delete madevma-remove-recipient-row"><?php esc_html_e( 'Remove', 'mad-event-mailer' ); ?></button></td></tr>
             <?php endforeach; ?></tbody></table></div>
             <p><button type="button" class="button" id="madevma-add-recipient-row"><?php esc_html_e( 'Add Row', 'mad-event-mailer' ); ?></button> <?php submit_button(__( 'Save Online Recipients', 'mad-event-mailer' ), 'primary', 'submit', false); ?></p>
         </form>

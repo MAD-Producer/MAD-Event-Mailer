@@ -4,7 +4,7 @@ Tags: email, smtp, newsletter, event, csv
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.4.0
+Stable tag: 2.4.1
 License: GPL v2
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -36,13 +36,19 @@ Yes. Use variables such as `{{score}}`, `{{rank}}`, and `{{comment}}`, then incl
 
 = Can I edit recipients without uploading a CSV? =
 
-Yes. The Subscribers screen includes an online row editor. Each recipient can be assigned to event-language lists and bound to an email template; the bound template and recipient variables are used when a campaign is sent.
+Yes. The Subscribers screen includes an online row editor. Each row must be bound to an email template. Selecting a template automatically creates fields for the editable variables found in that template, so no JSON editing is required. The bound template and recipient variables are used when a campaign is sent.
 
 = Does the plugin reject advertising recipients? =
 
 The importer, online editor, public subscription form, and sending pipeline reject clearly promotional rows, such as link-heavy cryptocurrency advertisements. Existing rows can be reviewed and discarded from the Subscribers screen.
 
 == Changelog ==
+
+= 2.4.1 =
+* Replaced online recipient JSON editing with template-driven variable fields.
+* Made an email template mandatory for every online recipient row.
+* Automatically detects editable variables from the selected template and rebuilds the row fields when the template changes.
+* Reports online rows that were skipped because their template binding or recipient data was invalid.
 
 = 2.4.0 =
 * Updated the WordPress.org metadata to Tested up to WordPress 7.1 and reviewed the plugin's admin editor, file upload, toolbar, and dependency usage for the 7.1 changes.
