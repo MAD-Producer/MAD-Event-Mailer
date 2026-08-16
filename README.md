@@ -16,7 +16,7 @@ The plugin was created for event operation scenarios such as submission notices,
 - **Author:** [MAD Producer Studio](https://github.com/MAD-Producer)
 - **License:** GPL v2
 - **Text domain:** `mad-event-mailer`
-- **Current version:** 2.4.2
+- **Current version:** 2.4.3
 - **Shortcode:** `[madevma_email_register]`
 
 ## Main Features
@@ -34,6 +34,7 @@ The plugin allows WordPress to send HTML emails through a custom SMTP server. Yo
 - sender name
 - reply-to address
 - batch sending quantity
+- seconds between background emails
 
 This is useful when the default WordPress email system is unreliable or when you need to send from a dedicated event mailbox.
 
@@ -166,7 +167,7 @@ Supported button languages:
 
 ### Batch Sending and Scheduled Sending
 
-The plugin supports batch sending to reduce server pressure. You can configure the number of emails sent per batch.
+The plugin supports background batch sending to reduce server pressure. You can configure the maximum batch size and the number of seconds between emails.
 
 Campaigns can be:
 
@@ -174,8 +175,9 @@ Campaigns can be:
 - scheduled for a future time
 - saved as drafts
 - reused from previous campaign settings
+- cancelled while queued, scheduled, or sending
 
-The scheduled sending system uses WordPress Cron, so real execution time may depend on site traffic and WordPress Cron behavior.
+Campaigns are queued instead of sending inside the admin request. A WordPress Cron worker sends one email per interval when a delay is configured, checks the campaign status before every recipient, and stops pending recipients when the campaign is cancelled. The worker still depends on WordPress Cron, so execution time may depend on site traffic and the site's Cron configuration.
 
 ### Email Branding Images
 
@@ -299,6 +301,13 @@ Table names may vary depending on the WordPress database prefix.
 - For better deliverability, configure SPF, DKIM, and DMARC for the sender domain.
 
 ## Release Notes
+
+### 2.4.3
+
+- Moved campaign delivery into a background WP-Cron worker so creating a campaign does not block the admin request.
+- Added configurable per-email sending intervals and a safe batch limit to reduce server pressure.
+- Added campaign cancellation for queued, scheduled, and active campaigns; pending recipients are marked cancelled and are not sent.
+- Added a worker lock and cancellation checks to prevent overlapping campaign workers from continuing after cancellation.
 
 ### 2.4.2
 

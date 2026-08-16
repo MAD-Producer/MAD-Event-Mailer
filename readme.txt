@@ -4,7 +4,7 @@ Tags: email, smtp, newsletter, event, csv
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.4.2
+Stable tag: 2.4.3
 License: GPL v2
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -42,7 +42,17 @@ Yes. The Subscribers screen includes an online row editor. Each row must be boun
 
 The importer, online editor, public subscription form, and sending pipeline reject clearly promotional rows, such as link-heavy cryptocurrency advertisements. Existing rows can be reviewed and discarded from the Subscribers screen.
 
+= Can I cancel a campaign after creating it? =
+
+Yes. Campaigns run in the background through WP-Cron. From Campaigns, cancel a queued, scheduled, or sending campaign to stop its pending recipients. An email already being handed to the mail server may finish.
+
 == Changelog ==
+
+= 2.4.3 =
+* Moved campaign delivery into a background WP-Cron worker so creating a campaign does not block the admin request.
+* Added configurable per-email sending intervals and a safe batch limit to reduce server pressure.
+* Added campaign cancellation for queued, scheduled, and active campaigns; pending recipients are marked cancelled and are not sent.
+* Added a worker lock and cancellation checks to prevent overlapping campaign workers from continuing after cancellation.
 
 = 2.4.2 =
 * Inlined template CSS before delivery so Gmail and other clients that remove style blocks retain the email layout.
