@@ -4,7 +4,7 @@ Tags: email, smtp, newsletter, event, csv
 Requires at least: 6.2
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 2.4.3
+Stable tag: 2.4.4
 License: GPL v2
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -47,6 +47,12 @@ The importer, online editor, public subscription form, and sending pipeline reje
 Yes. Campaigns run in the background through WP-Cron. From Campaigns, cancel a queued, scheduled, or sending campaign to stop its pending recipients. An email already being handed to the mail server may finish.
 
 == Changelog ==
+
+= 2.4.4 =
+* Prevented event campaigns from falling back to all subscribers when an event-language list is missing or invalid.
+* Made all-recipient delivery an explicit confirmation-only option and displayed the selected recipient source in campaign history.
+* Stored WordPress/SMTP mail transport errors for failed deliveries and marked campaigns with zero accepted messages as Failed.
+* Moved the strictly template-bound online recipient editor alongside import/export tools and required explicit template selection for new rows.
 
 = 2.4.3 =
 * Moved campaign delivery into a background WP-Cron worker so creating a campaign does not block the admin request.
