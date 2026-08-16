@@ -195,8 +195,6 @@
                 else if (suffix === '[template_id]') field.value = '';
                 else if (suffix === '[email]' || suffix === '[name]' || suffix === '[events]' || suffix.indexOf('[variables]') === 0) field.value = '';
             });
-            var select = templateSelect(row);
-            if (select && select.options.length > 1) select.value = select.options[1].value;
             renderVariableFields(row, {});
         }
 

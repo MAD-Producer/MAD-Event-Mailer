@@ -16,7 +16,7 @@ The plugin was created for event operation scenarios such as submission notices,
 - **Author:** [MAD Producer Studio](https://github.com/MAD-Producer)
 - **License:** GPL v2
 - **Text domain:** `mad-event-mailer`
-- **Current version:** 2.4.2
+- **Current version:** 2.4.4
 - **Shortcode:** `[madevma_email_register]`
 
 ## Main Features
@@ -34,6 +34,7 @@ The plugin allows WordPress to send HTML emails through a custom SMTP server. Yo
 - sender name
 - reply-to address
 - batch sending quantity
+- seconds between background emails
 
 This is useful when the default WordPress email system is unreliable or when you need to send from a dedicated event mailbox.
 
@@ -116,7 +117,7 @@ Optional fields:
 
 ### Online Recipient Editor
 
-The Subscribers screen also provides a row-by-row editor. Each row must be bound to one specific email template and can be assigned to one or more event-language recipient lists. Selecting a template automatically detects its editable variables and creates ordinary fields for that row; no JSON editing is required. The bound template and values are merged into the campaign before rendering.
+The Subscribers screen provides a separate Recipient Data Tools section alongside recipient import/export. Its row-by-row editor is not part of the single-recipient form. Each row must be bound to one specific email template and can be assigned to one or more event-language recipient lists. Selecting a template automatically detects its editable variables and creates ordinary fields for that row; no JSON editing is required. The bound template and values are merged into the campaign before rendering.
 
 Clearly promotional advertising rows are rejected by the recipient filter during public subscription, manual entry, CSV import, online editing, campaign preparation, and sending. Existing rows can be cleaned from the Subscribers screen.
 
@@ -166,7 +167,9 @@ Supported button languages:
 
 ### Batch Sending and Scheduled Sending
 
-The plugin supports batch sending to reduce server pressure. You can configure the number of emails sent per batch.
+The plugin supports background batch sending to reduce server pressure. You can configure the maximum batch size and the number of seconds between emails.
+
+Event campaigns require an explicit event-language list. The send form no longer falls back to all subscribers when the list is missing or invalid. Sending to every subscribed recipient remains available only as an explicit, confirmed option. If WordPress or the SMTP transport rejects a message, the campaign log stores the returned error and a campaign with zero accepted messages is marked Failed rather than Finished.
 
 Campaigns can be:
 
@@ -174,8 +177,9 @@ Campaigns can be:
 - scheduled for a future time
 - saved as drafts
 - reused from previous campaign settings
+- cancelled while queued, scheduled, or sending
 
-The scheduled sending system uses WordPress Cron, so real execution time may depend on site traffic and WordPress Cron behavior.
+Campaigns are queued instead of sending inside the admin request. A WordPress Cron worker sends one email per interval when a delay is configured, checks the campaign status before every recipient, and stops pending recipients when the campaign is cancelled. The worker still depends on WordPress Cron, so execution time may depend on site traffic and the site's Cron configuration.
 
 ### Email Branding Images
 
@@ -299,6 +303,20 @@ Table names may vary depending on the WordPress database prefix.
 - For better deliverability, configure SPF, DKIM, and DMARC for the sender domain.
 
 ## Release Notes
+
+### 2.4.4
+
+- Prevented event campaigns from silently falling back to all subscribers when an event-language list is missing or invalid.
+- Made all-recipient delivery an explicit confirmation-only option and display the selected recipient source in campaign history.
+- Stored the WordPress mail transport error for failed deliveries and marked campaigns with zero accepted messages as Failed.
+- Moved the strictly template-bound online recipient editor into the Recipient Data Tools section alongside import/export, and made new rows require an explicit template selection.
+
+### 2.4.3
+
+- Moved campaign delivery into a background WP-Cron worker so creating a campaign does not block the admin request.
+- Added configurable per-email sending intervals and a safe batch limit to reduce server pressure.
+- Added campaign cancellation for queued, scheduled, and active campaigns; pending recipients are marked cancelled and are not sent.
+- Added a worker lock and cancellation checks to prevent overlapping campaign workers from continuing after cancellation.
 
 ### 2.4.2
 
