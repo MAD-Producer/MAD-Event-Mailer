@@ -55,6 +55,17 @@
         if (modal) modal.style.display = 'none';
         if (frame) frame.src = 'about:blank';
     }
+    function bindAiTemplatePage() {
+        var mode = byId('madevma-ai-mode'), row = byId('madevma-ai-base-row'), base = byId('madevma-ai-base-template');
+        if (!mode || !row) return;
+        function sync() {
+            var useGeneral = mode.value === 'general';
+            row.style.display = useGeneral ? '' : 'none';
+            if (base) base.required = useGeneral;
+        }
+        mode.addEventListener('change', sync);
+        sync();
+    }
     function bindTemplatePage() {
         var modal = byId('madevmaTemplateModal'), frame = byId('madevmaTemplateFrame'), close = byId('madevmaTemplateClose');
         document.querySelectorAll('.madevma-mailer-template-preview').forEach(function (button) {
@@ -280,6 +291,6 @@
         window.setTimeout(refreshVars, 600);
     }
 
-    function ready() { bindTemplatePage(); bindConfirmations(); bindEventOrder(); bindRecipientGrid(); bindSendPage(); }
+    function ready() { bindTemplatePage(); bindAiTemplatePage(); bindConfirmations(); bindEventOrder(); bindRecipientGrid(); bindSendPage(); }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready); else ready();
 }());

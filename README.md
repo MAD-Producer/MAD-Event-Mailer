@@ -16,7 +16,7 @@ The plugin was created for event operation scenarios such as submission notices,
 - **Author:** [MAD Producer Studio](https://github.com/MAD-Producer)
 - **License:** GPL v2
 - **Text domain:** `mad-event-mailer`
-- **Current version:** 2.4.1
+- **Current version:** 2.4.2
 - **Shortcode:** `[madevma_email_register]`
 
 ## Main Features
@@ -299,6 +299,12 @@ Table names may vary depending on the WordPress database prefix.
 - For better deliverability, configure SPF, DKIM, and DMARC for the sender domain.
 
 ## Release Notes
+
+### 2.4.2
+
+- Inlines template CSS before delivery so Gmail and other clients that remove style blocks retain the email layout.
+- Explicitly configures outgoing messages as UTF-8 HTML through PHPMailer.
+- Restricts Quick Create to the two built-in Chinese and English general templates so previously created content cannot be inherited accidentally.
 
 ### 2.4.1
 

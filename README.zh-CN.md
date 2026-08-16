@@ -14,7 +14,7 @@ MAD Event Mailer 是一个用于 WordPress 的活动通知邮件插件，适合�
 - **作者：** [MAD Producer Studio](https://github.com/MAD-Producer)
 - **许可证：** GPL v2
 - **Text Domain：** `mad-event-mailer`
-- **当前版本：** 2.4.1
+- **当前版本：** 2.4.2
 - **短代码：** `[madevma_email_register]`
 
 ## 主要功能
@@ -277,6 +277,12 @@ jane@example.com,Jane,IFT IC #6,88,5,Good structure
 - 插件用于活动通知和社群通知，不应用于垃圾邮件或未经许可的营销邮件。
 
 ## Release 说明
+
+### 2.4.2
+
+- 发送前将模板 CSS 转为内联样式，避免 Gmail 等会移除 style 标签的客户端丢失邮件布局。
+- 通过 PHPMailer 明确将外发邮件配置为 UTF-8 HTML 邮件。
+- “从通用模板创建”仅允许使用内置中英文通用模板，避免误继承之前创建的模板内容。
 
 ### 2.4.1
 
